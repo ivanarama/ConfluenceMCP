@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import requests
+from requests.auth import HTTPBasicAuth
 from typing import Any
 
 
@@ -10,20 +11,23 @@ class ConfluenceClient:
     """Client for interacting with Confluence REST API v2."""
 
     BASE_URL: str
-    PAT_TOKEN: str
+    USERNAME: str
+    API_TOKEN: str
 
-    def __init__(self, base_url: str, pat_token: str) -> None:
+    def __init__(self, base_url: str, username: str, api_token: str) -> None:
         """Initialize the Confluence client.
 
         Args:
             base_url: Base URL of Confluence instance (e.g., https://domain.atlassian.net/wiki)
-            pat_token: Personal Access Token for authentication
+            username: Email address for authentication
+            api_token: API token for authentication
         """
         self.BASE_URL = base_url.rstrip("/")
-        self.PAT_TOKEN = pat_token
+        self.USERNAME = username
+        self.API_TOKEN = api_token
         self.session = requests.Session()
+        self.session.auth = HTTPBasicAuth(username, api_token)
         self.session.headers.update({
-            "Authorization": f"Bearer {pat_token}",
             "Accept": "application/json"
         })
 

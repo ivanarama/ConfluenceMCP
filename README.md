@@ -1,6 +1,6 @@
 # MCP Server for Confluence Search
 
-MCP (Model Context Protocol) server for searching internal Confluence documentation. Uses **StreamableHttp/SSE transport** for HTTP-based communication.
+MCP (Model Context Protocol) server for searching internal Confluence documentation. Uses **StreamableHttp/SSE transport** for HTTP-based communication with **Basic Authentication**.
 
 ## Features
 
@@ -9,6 +9,7 @@ MCP (Model Context Protocol) server for searching internal Confluence documentat
 - **Page Content**: Retrieve full page content by ID
 - **Space Listing**: List all available Confluence spaces
 - **HTTP/SSE Transport**: Runs as HTTP server with Server-Sent Events
+- **Basic Auth**: Uses username + password (local) or email + API token (cloud)
 
 ## Installation
 
@@ -25,7 +26,8 @@ cp .env.example .env
 Edit `.env`:
 ```
 CONFLUENCE_BASE_URL=https://your-domain.atlassian.net/wiki
-CONFLUENCE_PAT_TOKEN=your-pat-token-here
+CONFLUENCE_USERNAME=your-email@example.com
+CONFLUENCE_API_TOKEN=your-api-token-here
 MCP_PORT=8003
 ```
 
@@ -55,18 +57,24 @@ cp .env.example .env
 
 ## Getting Confluence Credentials
 
-### Step 1: Get Confluence URL
+### For Local/On-Premise Confluence
 
-1. Open your Confluence in a browser
-2. The URL will look like: `https://your-domain.atlassian.net/wiki`
-3. Copy the base URL
+1. **Get Confluence URL** — usually `http://localhost:8090/wiki` or your server URL
+2. **Use your username and password** — the same credentials you use to login to Confluence
 
-### Step 2: Create Personal Access Token (PAT)
+Example `.env`:
+```
+CONFLUENCE_BASE_URL=http://localhost:8090/wiki
+CONFLUENCE_USERNAME=admin
+CONFLUENCE_API_TOKEN=your-password
+```
 
+### For Atlassian Cloud
+
+If you're using Atlassian Cloud, you need an API token:
 1. Go to: https://id.atlassian.com/manage-profile/security/api-tokens
 2. Click "Create API token"
-3. Name the token (e.g., "MCP Confluence Server")
-4. Save the token — it's shown only once!
+3. Use your email as username and the API token as password
 
 ## Usage
 
@@ -222,7 +230,7 @@ space = "DEV" AND type = "page" AND (text ~ "API" OR text ~ "REST")
 src/confluence_mcp/
 ├── __init__.py          # Package initialization
 ├── server.py            # MCP server with SSE transport
-├── confluence_client.py # Confluence API client
+├── confluence_client.py # Confluence API client with Basic Auth
 └── config.py            # Configuration management
 ```
 
@@ -248,5 +256,5 @@ docker-compose down
 ## Requirements
 
 - Python 3.10+
-- Confluence access with Personal Access Token
+- Confluence access (local or cloud, with Basic Auth)
 - Docker (optional, for containerized deployment)

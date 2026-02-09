@@ -12,7 +12,7 @@ from .config import get_config
 mcp = FastMCP("confluence-search")
 
 config = get_config()
-client = ConfluenceClient(config.base_url, config.pat_token)
+client = ConfluenceClient(config.base_url, config.username, config.api_token)
 
 
 @mcp.tool

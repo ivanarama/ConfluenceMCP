@@ -11,29 +11,36 @@ load_dotenv()
 class Config:
     """Configuration for Confluence connection."""
     base_url: str
-    pat_token: str
+    username: str
+    api_token: str
 
 
 def get_config() -> Config:
     """Load configuration from environment variables.
 
     Returns:
-        Config object with base_url and pat_token
+        Config object with base_url, username and api_token
 
     Raises:
         ValueError: If required environment variables are not set
     """
     base_url = os.getenv("CONFLUENCE_BASE_URL")
-    pat_token = os.getenv("CONFLUENCE_PAT_TOKEN")
+    username = os.getenv("CONFLUENCE_USERNAME")
+    api_token = os.getenv("CONFLUENCE_API_TOKEN")
 
     if not base_url:
         raise ValueError(
             "CONFLUENCE_BASE_URL должен быть установлен в переменных окружения"
         )
 
-    if not pat_token:
+    if not username:
         raise ValueError(
-            "CONFLUENCE_PAT_TOKEN должен быть установлен в переменных окружения"
+            "CONFLUENCE_USERNAME должен быть установлен в переменных окружения"
         )
 
-    return Config(base_url=base_url, pat_token=pat_token)
+    if not api_token:
+        raise ValueError(
+            "CONFLUENCE_API_TOKEN должен быть установлен в переменных окружения"
+        )
+
+    return Config(base_url=base_url, username=username, api_token=api_token)
