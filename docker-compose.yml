@@ -1,0 +1,12 @@
+services:
+  confluence-mcp:
+    build: .
+    container_name: confluence-mcp-server
+    restart: unless-stopped
+    ports:
+      - "${MCP_PORT:-8003}:8003"
+    environment:
+      - CONFLUENCE_BASE_URL=${CONFLUENCE_BASE_URL}
+      - CONFLUENCE_PAT_TOKEN=${CONFLUENCE_PAT_TOKEN}
+      - MCP_PORT=${MCP_PORT:-8003}
+      - MCP_HOST=0.0.0.0
