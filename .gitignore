@@ -39,3 +39,7 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Text files (except requirements.txt)
+*.txt
+!requirements.txt
