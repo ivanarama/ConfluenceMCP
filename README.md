@@ -1,6 +1,6 @@
 # MCP Server for Confluence Search
 
-MCP (Model Context Protocol) server for searching internal Confluence documentation. Uses **StreamableHttp/SSE transport** for HTTP-based communication with **Basic Authentication**.
+MCP (Model Context Protocol) server for searching internal Confluence documentation. Supports **SSE** and **streamable-http** transports for HTTP-based communication with **Basic Authentication**.
 
 ## Features
 
@@ -8,7 +8,8 @@ MCP (Model Context Protocol) server for searching internal Confluence documentat
 - **CQL Search**: Advanced search using Confluence Query Language
 - **Page Content**: Retrieve full page content by ID
 - **Space Listing**: List all available Confluence spaces
-- **HTTP/SSE Transport**: Runs as HTTP server with Server-Sent Events
+- **Multiple Transports**: SSE, streamable-http, and stdio
+- **MCP SuperAssistant Compatible**: Works with MCP SuperAssistant Proxy
 - **Basic Auth**: Uses username + password (local) or email + API token (cloud)
 
 ## Installation
@@ -188,6 +189,64 @@ Add to `C:\Users\ibrog\AppData\Roaming\Claude\claude_desktop_config.json`:
 Start the server:
 ```bash
 python -m confluence_mcp.server
+```
+
+## MCP SuperAssistant Proxy Integration
+
+This server supports **streamable-http** transport for use with [MCP SuperAssistant Proxy](https://github.com/sammcj/mcp-superassistant-proxy).
+
+### Configuration
+
+Add to your MCP SuperAssistant Proxy config file:
+
+```json
+{
+  "mcpServers": {
+    "confluence": {
+      "type": "streamable-http",
+      "url": "http://localhost:8003/mcp",
+      "timeout": 30
+    }
+  }
+}
+```
+
+### Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/mcp` | GET | SSE endpoint info |
+| `/mcp` | POST | JSON-RPC requests |
+| `/sse` | GET | Standard SSE endpoint |
+
+### Response Format
+
+The `/mcp` endpoint returns responses in SSE format:
+
+```
+event: message
+data: {"jsonrpc":"2.0","id":1,"result":{...}}
+```
+
+This is compatible with MCP SuperAssistant Proxy's `streamable-http` transport type.
+
+### Example curl Test
+
+```bash
+# Test initialize
+curl -X POST "http://localhost:8003/mcp" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+
+# Test tools/list
+curl -X POST "http://localhost:8003/mcp" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+
+# Test tools/call
+curl -X POST "http://localhost:8003/mcp" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_spaces","arguments":{"limit":10}}}'
 ```
 
 ### Configuration Options
