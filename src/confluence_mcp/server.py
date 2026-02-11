@@ -180,28 +180,47 @@ async def mcp_endpoint(request) -> any:
             arguments = params.get("arguments", {})
 
             try:
-                tools_dict = await mcp.get_tools()
-                if name in tools_dict:
-                    tool = tools_dict[name]
-                    if hasattr(tool, 'fn') and callable(tool.fn):
+                # Преобразуем типы аргументов для каждого инструмента
+                if name == "search_content":
+                    arguments["limit"] = int(arguments.get("limit", 10))
+                    if "space_key" in arguments and arguments["space_key"] is None:
+                        del arguments["space_key"]
+                elif name == "search_by_cql":
+                    arguments["limit"] = int(arguments.get("limit", 10))
+                    if isinstance(arguments.get("expand"), str):
+                        arguments["expand"] = arguments["expand"].split(",")
+                elif name == "get_page_content":
+                    pass  # page_id - строка
+                elif name == "list_spaces":
+                    arguments["limit"] = int(arguments.get("limit", 50))
+
+                # Вызываем функцию напрямую через декорированный объект
+                tools_map = {
+                    "search_content": search_content,
+                    "search_by_cql": search_by_cql,
+                    "get_page_content": get_page_content,
+                    "list_spaces": list_spaces
+                }
+
+                if name in tools_map:
+                    tool = tools_map[name]
+                    # FunctionTool имеет атрибут fn - это оригинальная функция
+                    if hasattr(tool, 'fn'):
                         result = tool.fn(**arguments)
-                        return create_sse_response({
-                            "jsonrpc": "2.0",
-                            "id": req_id,
-                            "result": {"content": [{"type": "text", "text": str(result)}]}
-                        })
                     else:
-                        return create_sse_response({
-                            "jsonrpc": "2.0",
-                            "id": req_id,
-                            "error": {"code": -32603, "message": f"Tool {name} is not callable"}
-                        })
+                        result = tool(**arguments)
                 else:
                     return create_sse_response({
                         "jsonrpc": "2.0",
                         "id": req_id,
                         "error": {"code": -32601, "message": f"Tool not found: {name}"}
                     })
+
+                return create_sse_response({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {"content": [{"type": "text", "text": str(result)}]}
+                })
             except Exception as e:
                 return create_sse_response({
                     "jsonrpc": "2.0",
