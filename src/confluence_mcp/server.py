@@ -1,11 +1,11 @@
-"""MCP Server for Confluence - with custom HTTP endpoints for MCP SuperAssistant Proxy."""
+"""MCP Server for Confluence - supports SSE and streamable-http transports."""
 
 from fastmcp import FastMCP
 import json
 import os
-import uuid
-from typing import Dict
-
+from typing import Dict, Any
+from starlette.applications import Starlette
+from starlette.routing import Mount
 from .confluence_client import ConfluenceClient
 from .config import get_config
 
@@ -16,6 +16,7 @@ SERVER_NAME = "confluence-search"
 SERVER_HOST = os.getenv("MCP_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("MCP_PORT", "8003"))
 
+# Create MCP server
 mcp = FastMCP(SERVER_NAME)
 
 
@@ -33,7 +34,7 @@ def search_content(
     if content_type and content_type != "all":
         cql_parts.append(f'type = "{content_type}"')
     cql = " AND ".join(cql_parts)
-    result = client.search(cql=cql, limit=limit, expand=["space", "version"])
+    result = client.search(cql=cql, limit=int(limit), expand=["space", "version"])
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -42,7 +43,7 @@ def search_by_cql(cql: str, limit: int = 10, expand: list[str] | None = None) ->
     """Advanced search using CQL."""
     if expand is None:
         expand = ["space", "version"]
-    result = client.search(cql=cql, limit=limit, expand=expand)
+    result = client.search(cql=cql, limit=int(limit), expand=expand)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -56,229 +57,24 @@ def get_page_content(page_id: str) -> str:
 @mcp.tool()
 def list_spaces(limit: int = 50) -> str:
     """Get list of available spaces."""
-    result = client.get_spaces(limit=limit)
+    result = client.get_spaces(limit=int(limit))
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
-def create_sse_response(data: Dict) -> any:
-    """Создаёт SSE ответ из данных JSON-RPC"""
-    from starlette.responses import Response
-    sse_data = json.dumps(data, ensure_ascii=False)
-    return Response(
-        content=f"event: message\ndata: {sse_data}\n\n",
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
+if __name__ == "__main__":
+    import uvicorn
+
+    # Create SSE app (for Claude Code) - uses /messages endpoint
+    sse_app = mcp.http_app(transport="sse")
+
+    # Create streamable-http app (for SuperAssistant Proxy) - uses /mcp endpoint
+    streamable_http_app = mcp.http_app(transport="streamable-http", path="/mcp")
+
+    # Combine both apps by extracting routes
+    # SSE app handles /sse and /messages
+    # streamable-http app handles /mcp
+    app = Starlette(
+        routes=streamable_http_app.routes + sse_app.routes
     )
 
-
-@mcp.custom_route("/mcp", methods=["GET", "POST"])
-async def mcp_endpoint(request) -> any:
-    """Endpoint для MCP SuperAssistant Proxy с SSE форматом ответов."""
-    from starlette.responses import Response
-
-    # GET - возвращаем endpoint info
-    if request.method == "GET":
-        return Response(
-            content="event: endpoint\ndata: /mcp\n\n",
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
-        )
-
-    # POST - обрабатываем JSON-RPC запросы
-    try:
-        req_data = await request.json()
-
-        if not isinstance(req_data, dict):
-            return create_sse_response({
-                "jsonrpc": "2.0",
-                "id": None,
-                "error": {"code": -32600, "message": "Invalid Request"}
-            })
-
-        method = req_data.get("method")
-        req_id = req_data.get("id")
-
-        # initialize
-        if method == "initialize":
-            return create_sse_response({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {
-                    "protocolVersion": "2024-11-05",
-                    "serverInfo": {"name": SERVER_NAME, "version": "1.0.0"},
-                    "capabilities": {"tools": {}}
-                }
-            })
-
-                # tools/list
-        elif method == "tools/list":
-            # Возвращаем инструменты с правильными схемами
-            tools = [
-                {
-                    "name": "search_content",
-                    "description": "Search content in Confluence by keywords.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "query": {"type": "string", "description": "Keywords to search for"},
-                            "space_key": {"type": "string", "description": "Space key filter (optional)"},
-                            "content_type": {"type": "string", "enum": ["page", "blogpost", "all"], "description": "Content type (default: page)"},
-                            "limit": {"type": "integer", "description": "Max results (default: 10)", "default": 10}
-                        },
-                        "required": ["query"]
-                    }
-                },
-                {
-                    "name": "search_by_cql",
-                    "description": "Advanced search using CQL.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "cql": {"type": "string", "description": "CQL query"},
-                            "limit": {"type": "integer", "default": 10},
-                            "expand": {"type": "array", "items": {"type": "string"}, "default": ["space", "version"]}
-                        },
-                        "required": ["cql"]
-                    }
-                },
-                {
-                    "name": "get_page_content",
-                    "description": "Get full content of a page by ID.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "page_id": {"type": "string", "description": "Confluence page ID"}
-                        },
-                        "required": ["page_id"]
-                    }
-                },
-                {
-                    "name": "list_spaces",
-                    "description": "Get list of available spaces.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "limit": {"type": "integer", "default": 50}
-                        }
-                    }
-                }
-            ]
-            return create_sse_response({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"tools": tools}
-            })
-
-        # tools/call
-        elif method == "tools/call":
-            params = req_data.get("params", {})
-            name = params.get("name")
-            arguments = params.get("arguments", {})
-
-            try:
-                # Преобразуем типы аргументов для каждого инструмента
-                if name == "search_content":
-                    arguments["limit"] = int(arguments.get("limit", 10))
-                    if "space_key" in arguments and arguments["space_key"] is None:
-                        del arguments["space_key"]
-                elif name == "search_by_cql":
-                    arguments["limit"] = int(arguments.get("limit", 10))
-                    if isinstance(arguments.get("expand"), str):
-                        arguments["expand"] = arguments["expand"].split(",")
-                elif name == "get_page_content":
-                    pass  # page_id - строка
-                elif name == "list_spaces":
-                    arguments["limit"] = int(arguments.get("limit", 50))
-
-                # Вызываем функцию напрямую через декорированный объект
-                tools_map = {
-                    "search_content": search_content,
-                    "search_by_cql": search_by_cql,
-                    "get_page_content": get_page_content,
-                    "list_spaces": list_spaces
-                }
-
-                if name in tools_map:
-                    tool = tools_map[name]
-                    # FunctionTool имеет атрибут fn - это оригинальная функция
-                    if hasattr(tool, 'fn'):
-                        result = tool.fn(**arguments)
-                    else:
-                        result = tool(**arguments)
-                else:
-                    return create_sse_response({
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "error": {"code": -32601, "message": f"Tool not found: {name}"}
-                    })
-
-                return create_sse_response({
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {"content": [{"type": "text", "text": str(result)}]}
-                })
-            except Exception as e:
-                return create_sse_response({
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "error": {"code": -32603, "message": f"Tool execution error: {str(e)}"}
-                })
-
-        # resources/list
-        elif method == "resources/list":
-            return create_sse_response({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"resources": []}
-            })
-
-        # prompts/list
-        elif method == "prompts/list":
-            return create_sse_response({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"prompts": []}
-            })
-
-        # notifications/*
-        elif method and method.startswith("notifications/"):
-            if req_id is not None:
-                return create_sse_response({"jsonrpc": "2.0", "id": req_id, "result": {}})
-            else:
-                return Response(content=": \n\n", media_type="text/event-stream")
-
-        # ping
-        elif method == "ping":
-            return create_sse_response({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "result": {"status": "ok"}
-            })
-
-        else:
-            return create_sse_response({
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {"code": -32601, "message": f"Method not found: {method}"}
-            })
-
-    except json.JSONDecodeError:
-        return create_sse_response({
-            "jsonrpc": "2.0",
-            "id": None,
-            "error": {"code": -32700, "message": "Parse error"}
-        })
-    except Exception as e:
-        return create_sse_response({
-            "jsonrpc": "2.0",
-            "id": req_data.get("id") if 'req_data' in locals() else None,
-            "error": {"code": -32603, "message": f"Internal error: {str(e)}"}
-        })
-
-
-if __name__ == "__main__":
-    mcp.run(transport="sse", host=SERVER_HOST, port=SERVER_PORT)
+    uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT)

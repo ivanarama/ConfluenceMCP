@@ -45,7 +45,9 @@ class ConfluenceClient:
         Raises:
             requests.HTTPError: If the request fails
         """
-        params: dict[str, Any] = {"cql": cql, "limit": min(limit, 100)}
+        # Ensure limit is an integer
+        limit_int = int(limit) if isinstance(limit, (int, str)) else 10
+        params: dict[str, Any] = {"cql": cql, "limit": min(limit_int, 100)}
         if expand:
             params["expand"] = ",".join(expand)
 
@@ -92,9 +94,11 @@ class ConfluenceClient:
         Raises:
             requests.HTTPError: If the request fails
         """
+        # Ensure limit is an integer
+        limit_int = int(limit) if isinstance(limit, (int, str)) else 50
         response = self.session.get(
             f"{self.BASE_URL}/rest/api/space",
-            params={"limit": limit}
+            params={"limit": limit_int}
         )
         response.raise_for_status()
         return response.json()

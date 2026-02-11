@@ -191,6 +191,21 @@ Start the server:
 python -m confluence_mcp.server
 ```
 
+### Claude Code Integration
+
+For Claude Code (CLI tool), add to your MCP config file (`C:\Users\ibrog\.claude\mcp_config.json` or similar):
+
+```json
+{
+  "mcpServers": {
+    "confluence": {
+      "url": "http://192.168.1.3:8003/sse",
+      "transport": "sse"
+    }
+  }
+}
+```
+
 ## MCP SuperAssistant Proxy Integration
 
 This server supports **streamable-http** transport for use with [MCP SuperAssistant Proxy](https://github.com/sammcj/mcp-superassistant-proxy).
@@ -213,11 +228,12 @@ Add to your MCP SuperAssistant Proxy config file:
 
 ### Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/mcp` | GET | SSE endpoint info |
-| `/mcp` | POST | JSON-RPC requests |
-| `/sse` | GET | Standard SSE endpoint |
+| Endpoint | Method | Description | For |
+|----------|--------|-------------|-----|
+| `/sse` | GET | SSE endpoint info | Claude Code/Claude Desktop |
+| `/messages/` | POST | SSE JSON-RPC messages | Claude Code/Claude Desktop |
+| `/mcp` | GET | SSE endpoint info | SuperAssistant Proxy |
+| `/mcp` | POST | JSON-RPC requests (SSE format) | SuperAssistant Proxy |
 
 ### Response Format
 
