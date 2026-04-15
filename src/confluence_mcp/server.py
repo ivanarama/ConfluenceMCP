@@ -135,6 +135,7 @@ def search_content(
             seen.add(iid)
             merged.append(item)
 
+    id_suffix = _cql_type_only_suffix(ct)
     for pid in extract_page_ids_from_text(q):
         if len(merged) >= lim:
             break
