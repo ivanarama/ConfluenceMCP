@@ -1,104 +1,78 @@
-"""Confluence REST API client."""
+"""Confluence REST API client (Server/Data Center — /rest/api/)."""
 
 from __future__ import annotations
 
+from typing import Any
+
 import requests
 from requests.auth import HTTPBasicAuth
-from typing import Any
+
+
+def _raise_for_status_with_body(response: requests.Response) -> None:
+    """Like raise_for_status but include response body snippet for 4xx/5xx."""
+    if response.ok:
+        return
+    snippet = (response.text or "").strip().replace("\n", " ")[:1200]
+    if snippet:
+        msg = f"{response.status_code} {response.reason} for {response.url}: {snippet}"
+    else:
+        msg = f"{response.status_code} {response.reason} for {response.url}"
+    raise requests.HTTPError(msg, response=response)
 
 
 class ConfluenceClient:
-    """Client for interacting with Confluence REST API v2."""
+    """HTTP client for Confluence REST API."""
 
-    BASE_URL: str
-    USERNAME: str
-    API_TOKEN: str
-
-    def __init__(self, base_url: str, username: str, api_token: str) -> None:
-        """Initialize the Confluence client.
-
-        Args:
-            base_url: Base URL of Confluence instance (e.g., https://domain.atlassian.net/wiki)
-            username: Email address for authentication
-            api_token: API token for authentication
-        """
+    def __init__(
+        self,
+        base_url: str,
+        username: str,
+        api_token: str,
+        *,
+        timeout: float = 30.0,
+    ) -> None:
         self.BASE_URL = base_url.rstrip("/")
         self.USERNAME = username
         self.API_TOKEN = api_token
+        self._timeout = timeout
         self.session = requests.Session()
         self.session.auth = HTTPBasicAuth(username, api_token)
-        self.session.headers.update({
-            "Accept": "application/json"
-        })
+        self.session.headers.update({"Accept": "application/json"})
+
+    def _get(self, url: str, *, params: dict[str, Any] | None = None) -> requests.Response:
+        r = self.session.get(url, params=params, timeout=self._timeout)
+        _raise_for_status_with_body(r)
+        return r
 
     def search(self, cql: str, limit: int = 10, expand: list[str] | None = None) -> dict[str, Any]:
-        """Execute search with CQL query.
-
-        Args:
-            cql: CQL query string
-            limit: Maximum number of results (max 100)
-            expand: List of fields to expand (space, version, container, etc.)
-
-        Returns:
-            Dictionary with search results
-
-        Raises:
-            requests.HTTPError: If the request fails
-        """
-        # Ensure limit is an integer
         limit_int = int(limit) if isinstance(limit, (int, str)) else 10
-        params: dict[str, Any] = {"cql": cql, "limit": min(limit_int, 100)}
+        q: dict[str, Any] = {"cql": cql, "limit": min(limit_int, 100)}
         if expand:
-            params["expand"] = ",".join(expand)
+            q["expand"] = ",".join(expand)
 
-        response = self.session.get(
-            f"{self.BASE_URL}/rest/api/content/search",
-            params=params
-        )
-        response.raise_for_status()
+        response = self._get(f"{self.BASE_URL}/rest/api/content/search", params=q)
         return response.json()
 
     def get_content(self, content_id: str, expand: list[str] | None = None) -> dict[str, Any]:
-        """Get content by ID.
-
-        Args:
-            content_id: ID of the content
-            expand: List of fields to expand (space, version, body.view, etc.)
-
-        Returns:
-            Dictionary with content data
-
-        Raises:
-            requests.HTTPError: If the request fails
-        """
         params: dict[str, Any] = {}
         if expand:
             params["expand"] = ",".join(expand)
 
-        response = self.session.get(
+        response = self._get(
             f"{self.BASE_URL}/rest/api/content/{content_id}",
-            params=params
+            params=params,
         )
-        response.raise_for_status()
         return response.json()
 
     def get_spaces(self, limit: int = 50) -> dict[str, Any]:
-        """Get list of available spaces.
-
-        Args:
-            limit: Maximum number of spaces to return
-
-        Returns:
-            Dictionary with spaces data
-
-        Raises:
-            requests.HTTPError: If the request fails
-        """
-        # Ensure limit is an integer
         limit_int = int(limit) if isinstance(limit, (int, str)) else 50
-        response = self.session.get(
+        response = self._get(
             f"{self.BASE_URL}/rest/api/space",
-            params={"limit": limit_int}
+            params={"limit": limit_int},
         )
-        response.raise_for_status()
+        return response.json()
+
+    def get_current_user(self) -> dict[str, Any]:
+        """Current user profile — cheap health check."""
+        response = self._get(f"{self.BASE_URL}/rest/api/user/current")
         return response.json()

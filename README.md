@@ -4,10 +4,12 @@ MCP (Model Context Protocol) server for searching internal Confluence documentat
 
 ## Features
 
-- **Keyword Search**: Search content by keywords with optional space and content type filters
+- **Keyword Search**: Search content by keywords with optional space and content type filters (CQL string escaping for quotes in queries)
 - **CQL Search**: Advanced search using Confluence Query Language
 - **Page Content**: Retrieve full page content by ID
 - **Space Listing**: List all available Confluence spaces
+- **Health Check**: `confluence_health` — verify Confluence URL and credentials via `/rest/api/user/current`
+- **Clearer HTTP errors**: 4xx/5xx responses include a truncated body snippet from Confluence
 - **Multiple Transports**: SSE, streamable-http, and stdio
 - **MCP SuperAssistant Compatible**: Works with MCP SuperAssistant Proxy
 - **Basic Auth**: Uses username + password (local) or email + API token (cloud)
@@ -101,13 +103,18 @@ MCP_PORT=8080 python -m confluence_mcp.server
 ### Available Tools
 
 #### `search_content`
-Basic keyword search with optional filters.
+Keyword search with optional filters. By default (`multi_pass=true`) the server also:
+extracts `pageId` from Confluence URLs in the query, runs several CQL passes (full text plus
+meaningful tokens such as names with underscores), uses `title ~` OR `text ~` for short variants,
+merges unique hits. Set `multi_pass=false` for legacy single-query `text ~` only.
 
 **Parameters:**
 - `query` (required): Keywords to search for
-- `space_key` (optional): Filter by space key
+- `space_key` (optional): One space key, or several comma-separated (e.g. `DEV, HR`)
+- `space_keys` (optional): List of space keys (preferred for multiple spaces; CQL uses OR)
 - `content_type` (optional): Content type - "page", "blogpost", or "all" (default: "page")
 - `limit` (optional): Max results, default 10 (max 100)
+- `multi_pass` (optional): Enable expanded search (default: `true`)
 
 **Example:**
 ```json
@@ -142,11 +149,19 @@ get_page_content(page_id="123456")
 List all available Confluence spaces.
 
 **Parameters:**
-- `limit` (optional): Max spaces to return, default 50
+- `limit` (optional): Max spaces to return, default 50 (max 100)
 
 **Example:**
 ```json
 list_spaces(limit=100)
+```
+
+#### `confluence_health`
+Lightweight check that Confluence is reachable and Basic Auth works (no search).
+
+**Example:**
+```json
+confluence_health()
 ```
 
 ## Claude Desktop Integration
@@ -304,9 +319,13 @@ space = "DEV" AND type = "page" AND (text ~ "API" OR text ~ "REST")
 ```
 src/confluence_mcp/
 ├── __init__.py          # Package initialization
-├── server.py            # MCP server with SSE transport
-├── confluence_client.py # Confluence API client with Basic Auth
-└── config.py            # Configuration management
+├── server.py            # MCP server (SSE + streamable-http)
+├── confluence_client.py # Confluence REST client with Basic Auth
+├── config.py            # Environment configuration
+└── cql_escape.py        # CQL string literal escaping
+
+tests/
+└── test_cql_escape.py   # Unit tests (run: python tests/test_cql_escape.py -v)
 ```
 
 ## Docker

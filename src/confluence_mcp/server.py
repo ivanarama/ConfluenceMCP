@@ -1,80 +1,228 @@
-"""MCP Server for Confluence - supports SSE and streamable-http transports."""
+"""MCP Server for Confluence — SSE and streamable-http transports."""
 
-from fastmcp import FastMCP
+from __future__ import annotations
+
 import json
 import os
-from typing import Dict, Any
+from typing import Any
+
+from fastmcp import FastMCP
 from starlette.applications import Starlette
-from starlette.routing import Mount
+
 from .confluence_client import ConfluenceClient
 from .config import get_config
+from .cql_escape import escape_cql_string
+from .query_expand import extract_page_ids_from_text, search_query_variants
 
 config = get_config()
-client = ConfluenceClient(config.base_url, config.username, config.api_token)
+client = ConfluenceClient(
+    config.base_url,
+    config.username,
+    config.api_token,
+    timeout=config.request_timeout,
+)
 
 SERVER_NAME = "confluence-search"
 SERVER_HOST = os.getenv("MCP_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("MCP_PORT", "8003"))
 
-# Create MCP server
+_CQL_CONTENT_TYPES = frozenset({"page", "blogpost", "comment", "attachment", "space", "all"})
+
 mcp = FastMCP(SERVER_NAME)
+
+
+def _normalize_space_keys(space_key: str | None, space_keys: list[str] | None) -> list[str]:
+    keys: list[str] = []
+    if space_keys:
+        keys = [str(k).strip() for k in space_keys if str(k).strip()]
+    if not keys and space_key and space_key.strip():
+        keys = [k.strip() for k in space_key.split(",") if k.strip()]
+    return keys
+
+
+def _cql_space_type_suffix(
+    space_key: str | None,
+    space_keys: list[str] | None,
+    content_type: str,
+) -> str:
+    parts: list[str] = []
+    keys = _normalize_space_keys(space_key, space_keys)
+    if len(keys) == 1:
+        parts.append(f'space = "{escape_cql_string(keys[0])}"')
+    elif len(keys) > 1:
+        inner = " OR ".join(f'space = "{escape_cql_string(k)}"' for k in keys)
+        parts.append(f"({inner})")
+    if content_type != "all":
+        parts.append(f'type = "{content_type}"')
+    if not parts:
+        return ""
+    return " AND " + " AND ".join(parts)
+
+
+def _cql_type_only_suffix(content_type: str) -> str:
+    """Только type — для поиска по id из ссылки (не режем по space, иначе страница «в другом space» пропадает)."""
+    if (content_type or "page").strip().lower() == "all":
+        return ""
+    ct = (content_type or "page").strip().lower()
+    return f' AND type = "{ct}"'
+
+
+def _cql_clause_for_variant(variant: str) -> str:
+    """Короткие запросы ищем и в title — заголовки часто совпадают с именами регламентов / метаданными."""
+    safe = escape_cql_string(variant)
+    if len(variant) <= 120:
+        return f'(title ~ "{safe}" OR text ~ "{safe}")'
+    return f'text ~ "{safe}"'
 
 
 @mcp.tool()
 def search_content(
     query: str,
     space_key: str | None = None,
+    space_keys: list[str] | None = None,
     content_type: str = "page",
-    limit: int = 10
+    limit: int = 10,
+    multi_pass: bool = True,
 ) -> str:
-    """Search content in Confluence by keywords."""
-    cql_parts = [f'text ~ "{query}"']
-    if space_key:
-        cql_parts.append(f'space = "{space_key}"')
-    if content_type and content_type != "all":
-        cql_parts.append(f'type = "{content_type}"')
-    cql = " AND ".join(cql_parts)
-    result = client.search(cql=cql, limit=int(limit), expand=["space", "version"])
-    return json.dumps(result, indent=2, ensure_ascii=False)
+    """Поиск страниц в Confluence (CQL).
+
+    По умолчанию (multi_pass=true): из текста извлекаются pageId из ссылок; дополнительно выполняется
+    несколько запросов по вариантам строки (полная фраза + токены с «_» и длинные слова), результаты
+    объединяются без дубликатов. Для коротких вариантов используется title OR text, для длинных — text.
+    multi_pass=false — одна классическая выборка text ~ «весь запрос» (старое поведение).
+    Фильтр пространств: space_keys (список ключей) или один space_key; в space_key можно через запятую
+    несколько ключей. Пусто — поиск по всем пространствам.
+    content_type: page | blogpost | comment | attachment | space | all
+    """
+    q = (query or "").strip()
+    if not q:
+        return json.dumps(
+            {"error": "query не может быть пустым", "results": []},
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    ct = (content_type or "page").strip().lower()
+    if ct not in _CQL_CONTENT_TYPES:
+        return json.dumps(
+            {
+                "error": f"content_type должен быть одним из: {sorted(_CQL_CONTENT_TYPES)}",
+                "got": content_type,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    lim = max(1, min(int(limit), 100))
+    suffix = _cql_space_type_suffix(space_key, space_keys, ct)
+
+    if not multi_pass:
+        safe = escape_cql_string(q)
+        cql = f'text ~ "{safe}"' + suffix
+        result = client.search(cql=cql, limit=lim, expand=["space", "version"])
+        return json.dumps(result, indent=2, ensure_ascii=False)
+
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def take(items: list[Any]) -> None:
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            iid = str(item.get("id", ""))
+            if not iid or iid in seen:
+                continue
+            seen.add(iid)
+            merged.append(item)
+
+    for pid in extract_page_ids_from_text(q):
+        if len(merged) >= lim:
+            break
+        id_queries = [f"id = {pid}", f'id = "{escape_cql_string(pid)}"']
+        for id_cql in id_queries:
+            try:
+                data = client.search(cql=id_cql + id_suffix, limit=1, expand=["space", "version"])
+                take(data.get("results", []))
+                break
+            except Exception:
+                continue
+
+    for variant in search_query_variants(q, max_variants=14):
+        if len(merged) >= lim:
+            break
+        clause = _cql_clause_for_variant(variant)
+        full_cql = clause + suffix
+        need = lim - len(merged)
+        fetch = min(max(need + 3, 5), 50)
+        try:
+            data = client.search(cql=full_cql, limit=fetch, expand=["space", "version"])
+            take(data.get("results", []))
+        except Exception:
+            continue
+
+    payload = {"results": merged[:lim], "size": len(merged[:lim])}
+    return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
 def search_by_cql(cql: str, limit: int = 10, expand: list[str] | None = None) -> str:
-    """Advanced search using CQL."""
+    """Поиск сырой строкой CQL (для опытных пользователей). Ошибки Confluence вернутся в тексте исключения."""
     if expand is None:
         expand = ["space", "version"]
-    result = client.search(cql=cql, limit=int(limit), expand=expand)
+    cql_stripped = (cql or "").strip()
+    if not cql_stripped:
+        return json.dumps({"error": "cql не может быть пустым"}, ensure_ascii=False, indent=2)
+
+    lim = max(1, min(int(limit), 100))
+    result = client.search(cql=cql_stripped, limit=lim, expand=expand)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
 def get_page_content(page_id: str) -> str:
-    """Get full content of a page by ID."""
-    result = client.get_content(content_id=page_id, expand=["space", "version", "body.view"])
+    """Полное содержимое страницы по ID (expand: space, version, body.view)."""
+    pid = (page_id or "").strip()
+    if not pid:
+        return json.dumps({"error": "page_id не может быть пустым"}, ensure_ascii=False, indent=2)
+
+    result = client.get_content(
+        content_id=pid,
+        expand=["space", "version", "body.view"],
+    )
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
 def list_spaces(limit: int = 50) -> str:
-    """Get list of available spaces."""
-    result = client.get_spaces(limit=int(limit))
+    """Список пространств (spaces), до limit штук (макс. 100)."""
+    lim = max(1, min(int(limit), 100))
+    result = client.get_spaces(limit=lim)
     return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def confluence_health() -> str:
+    """Проверка доступности Confluence и учётных данных (GET /rest/api/user/current)."""
+    try:
+        u: dict[str, Any] = client.get_current_user()
+        payload = {
+            "ok": True,
+            "username": u.get("username"),
+            "userKey": u.get("userKey"),
+            "displayName": u.get("displayName"),
+            "type": u.get("type"),
+        }
+    except Exception as exc:  # noqa: BLE001 — отдаём ошибку клиенту MCP как JSON
+        payload = {"ok": False, "error": str(exc)}
+    return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    # Create SSE app (for Claude Code) - uses /messages endpoint
     sse_app = mcp.http_app(transport="sse")
-
-    # Create streamable-http app (for SuperAssistant Proxy) - uses /mcp endpoint
     streamable_http_app = mcp.http_app(transport="streamable-http", path="/mcp")
 
-    # Combine both apps by extracting routes
-    # SSE app handles /sse and /messages
-    # streamable-http app handles /mcp
-    app = Starlette(
-        routes=streamable_http_app.routes + sse_app.routes
-    )
+    app = Starlette(routes=streamable_http_app.routes + sse_app.routes)
 
     uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT)

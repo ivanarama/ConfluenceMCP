@@ -13,6 +13,7 @@ class Config:
     base_url: str
     username: str
     api_token: str
+    request_timeout: float = 30.0
 
 
 def get_config() -> Config:
@@ -24,9 +25,9 @@ def get_config() -> Config:
     Raises:
         ValueError: If required environment variables are not set
     """
-    base_url = os.getenv("CONFLUENCE_BASE_URL")
-    username = os.getenv("CONFLUENCE_USERNAME")
-    api_token = os.getenv("CONFLUENCE_API_TOKEN")
+    base_url = (os.getenv("CONFLUENCE_BASE_URL") or "").strip()
+    username = (os.getenv("CONFLUENCE_USERNAME") or "").strip()
+    api_token = (os.getenv("CONFLUENCE_API_TOKEN") or "").strip()
 
     if not base_url:
         raise ValueError(
@@ -43,4 +44,15 @@ def get_config() -> Config:
             "CONFLUENCE_API_TOKEN должен быть установлен в переменных окружения"
         )
 
-    return Config(base_url=base_url, username=username, api_token=api_token)
+    timeout_raw = os.getenv("CONFLUENCE_TIMEOUT", "30")
+    try:
+        request_timeout = max(5.0, float(timeout_raw))
+    except ValueError:
+        request_timeout = 30.0
+
+    return Config(
+        base_url=base_url.rstrip("/"),
+        username=username,
+        api_token=api_token,
+        request_timeout=request_timeout,
+    )
