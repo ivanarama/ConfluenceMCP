@@ -50,12 +50,15 @@ class TestSearchVariants(unittest.TestCase):
         self.assertEqual(date_phrases, [], msg=f"Дата попала в подфразы: {date_phrases}")
 
     def test_camelcase_priority_over_sliding(self) -> None:
-        """CamelCase-варианты должны быть среди первых 14, даже при большом запросе."""
+        """Специфичные варианты (идентификатор, фраза) идут до одиночных CamelCase-слов."""
         q = "CRM Messenger_av_ОбновлениеСообщенийВСервисе Дата последнего регл. задания 13.01.2026"
-        v = search_query_variants(q, max_variants=14)
-        top14 = set(v[:14])
-        self.assertIn("ОбновлениеСообщенийВСервисе", top14)
-        self.assertIn("Обновление", top14)
+        v = search_query_variants(q, max_variants=24)
+        # Идентификатор целиком и CamelCase-токен — в начале
+        self.assertIn("ОбновлениеСообщенийВСервисе", v[:8])
+        # Слово запроса «регл» появляется ДО одиночных CamelCase-слов («Обновление»)
+        if "регл" in v and "Обновление" in v:
+            self.assertLess(v.index("регл"), v.index("Обновление"),
+                            msg="«регл» должен идти до общего слова «Обновление»")
 
     def test_russian_short_words_in_variants(self) -> None:
         q = "делаем замену ручки питы ?"

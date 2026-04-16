@@ -117,13 +117,20 @@ def search_query_variants(
     max_token_len: int = 240,
 ) -> list[str]:
     """
-    Полная фраза + CamelCase разбивка идентификаторов с «_» (высокий приоритет)
-    + слова от 4 символов + скользящие фразы 2-3 слова.
+    Порядок от конкретного к общему:
+      1. Полная фраза
+      2. Идентификаторы с «_» (точное имя регламента/объекта 1С)
+      3. CamelCase-токены целиком («ОбновлениеСообщенийВСервисе»)
+      4. CamelCase многословные фразы («Обновление Сообщений Сервисе»)
+      5. Слова запроса (не стоп-слова, не даты) + расширение аббревиатур 1С
+      6. Скользящие фразы из 3 слов  ← конкретнее одиночных слов
+      7. Скользящие фразы из 2 слов
+      8. CamelCase отдельные слова («Обновление», «Сообщений» …) ← самые общие
+      9. significant_words — добивка
 
-    Порядок приоритетов намеренный: CamelCase-части имён регламентов 1С/ERP
-    («ОбновлениеСообщенийВСервисе» → «Обновление», «Сообщений», «Сервисе»)
-    дают самый точный результат и поэтому идут ДО скользящих фраз.
-    Скользящие фразы полезны для поиска по обычному тексту, но занимают много слотов.
+    CamelCase-отдельные слова (шаг 8) намеренно идут ПОСЛЕДНИМИ: они часто
+    возвращают много нерелевантных страниц и могут заполнить limit до того,
+    как более точные фразы будут проверены.
     """
     q = (question or "").strip()
     if not q:
@@ -143,26 +150,33 @@ def search_query_variants(
     # 1. Полная фраза
     add(q)
 
-    # 2. Фрагменты с «_» (имена регламентов, объектов 1С/ERP) + их CamelCase-разбивка
     parts = re.split(r"\s+", q)
-    for p in sorted((x for x in parts if "_" in x and len(x) >= 6), key=len, reverse=True):
+    underscore_parts = sorted(
+        (x for x in parts if "_" in x and len(x) >= 6), key=len, reverse=True
+    )
+
+    # 2. Идентификаторы с «_» целиком
+    for p in underscore_parts:
         add(p)
-        # CamelCase каждого токена внутри идентификатора с «_» — высокий приоритет
+
+    # 3. CamelCase-токены целиком (без разбивки): «ОбновлениеСообщенийВСервисе»
+    for p in underscore_parts:
+        for tok in p.split("_"):
+            tok = tok.strip("-")
+            if len(tok) >= 4:
+                add(tok)
+
+    # 4. CamelCase многословные фразы: «Обновление Сообщений Сервисе»
+    for p in underscore_parts:
         for tok in p.split("_"):
             tok = tok.strip("-")
             if len(tok) < 4:
                 continue
-            # Сам токен целиком (например «ОбновлениеСообщенийВСервисе»)
-            add(tok)
             camel_words = _split_camel(tok)
             if len(camel_words) > 1:
                 add(" ".join(camel_words))
-                for cw in camel_words:
-                    if len(cw) >= 4:
-                        add(cw)
 
-    # 3. Каждое слово отдельно (очищаем знаки препинания по краям; даты и стоп-слова пропускаем)
-    #    Аббревиатуры 1С расширяются сразу: «регл» → «регламент», «регламентного» и т.д.
+    # 5. Слова запроса (не стоп-слова, не даты) + расширение 1С-аббревиатур
     clean_parts: list[str] = []
     for p in parts:
         cp = re.sub(r"^[\s?!.,;:«»\"'()\[\]]+|[\s?!.,;:«»\"'()\[\]]+$", "", p)
@@ -170,27 +184,35 @@ def search_query_variants(
             clean_parts.append(cp)
         if len(cp) >= 4 and not _is_date_like(cp) and not _is_stopword(cp):
             add(cp)
-            # Расширение аббревиатур — сразу после самого слова
-            for expanded in expand_abbrev(cp)[1:]:  # [1:] — пропускаем сам токен (уже добавлен)
+            for expanded in expand_abbrev(cp)[1:]:
                 add(expanded)
 
-    # 4. Скользящие фразы из 3 слов (только содержательные токены, без стоп-слов и дат)
+    # 6. Скользящие фразы из 3 слов (без стоп-слов и дат)
     meaningful = [w for w in clean_parts if not _is_date_like(w) and not w.isdigit()]
     for i in range(len(meaningful) - 2):
         phrase = " ".join(meaningful[i:i + 3])
         if len(phrase) >= 8:
             add(phrase)
 
-    # 5. Скользящие фразы из 2 слов
+    # 7. Скользящие фразы из 2 слов
     for i in range(len(meaningful) - 1):
         phrase = " ".join(meaningful[i:i + 2])
         if len(phrase) >= 6:
             add(phrase)
 
-    # 6. CamelCase разбивка обычных слов (без «_»)
+    # 8. CamelCase отдельные слова — самые общие, идут последними
+    for p in underscore_parts:
+        for tok in p.split("_"):
+            tok = tok.strip("-")
+            if len(tok) < 4:
+                continue
+            for cw in _split_camel(tok):
+                if len(cw) >= 4:
+                    add(cw)
+    # CamelCase обычных слов (без «_»)
     for p in parts:
         if "_" in p:
-            continue  # уже обработано в шаге 2
+            continue
         tok = re.sub(r"^[\s?!.,;:«»\"'()\[\]]+|[\s?!.,;:«»\"'()\[\]]+$", "", p).strip("-")
         if len(tok) < 4:
             continue
@@ -201,7 +223,7 @@ def search_query_variants(
                 if len(cw) >= 4:
                     add(cw)
 
-    # 7. Значимые слова по длине (финальное добивание, если лимит не исчерпан)
+    # 9. Значимые слова по длине (финальное добивание)
     for w in significant_words(q, min_len=4, max_words=12):
         add(w)
 
