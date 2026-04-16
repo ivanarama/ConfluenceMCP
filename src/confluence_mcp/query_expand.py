@@ -122,15 +122,18 @@ def search_query_variants(
       2. Идентификаторы с «_» (точное имя регламента/объекта 1С)
       3. CamelCase-токены целиком («ОбновлениеСообщенийВСервисе»)
       4. CamelCase многословные фразы («Обновление Сообщений Сервисе»)
-      5. Слова запроса (не стоп-слова, не даты) + расширение аббревиатур 1С
-      6. Скользящие фразы из 3 слов  ← конкретнее одиночных слов
-      7. Скользящие фразы из 2 слов
-      8. CamelCase отдельные слова («Обновление», «Сообщений» …) ← самые общие
+      5. Скользящие фразы из 3 слов  ← многословные = конкретные
+      6. Скользящие фразы из 2 слов
+      7. Одиночные слова запроса (не стоп-слова, не даты)
+      8. CamelCase отдельные слова («Обновление», «Сообщений» …)
       9. significant_words — добивка
 
-    CamelCase-отдельные слова (шаг 8) намеренно идут ПОСЛЕДНИМИ: они часто
-    возвращают много нерелевантных страниц и могут заполнить limit до того,
-    как более точные фразы будут проверены.
+    Одиночные слова (шаги 7-8) намеренно идут ПОСЛЕ фраз: «Дата» или «последнего»
+    в одиночку возвращают десятки нерелевантных страниц и заполняют limit раньше,
+    чем фраза «Дата последнего регл» находит нужную.
+
+    Расширение аббревиатур (регл→регламентного) убрано: Confluence индексирует
+    «регл.» именно как «регл», и поиск «регламентного» даёт ложные хиты.
     """
     q = (question or "").strip()
     if not q:
@@ -176,31 +179,33 @@ def search_query_variants(
             if len(camel_words) > 1:
                 add(" ".join(camel_words))
 
-    # 5. Слова запроса (не стоп-слова, не даты) + расширение 1С-аббревиатур
+    # Собираем clean_parts для фраз (без стоп-слов и дат)
     clean_parts: list[str] = []
     for p in parts:
         cp = re.sub(r"^[\s?!.,;:«»\"'()\[\]]+|[\s?!.,;:«»\"'()\[\]]+$", "", p)
         if len(cp) >= 3 and not _is_stopword(cp) and not _is_date_like(cp):
             clean_parts.append(cp)
-        if len(cp) >= 4 and not _is_date_like(cp) and not _is_stopword(cp):
-            add(cp)
-            for expanded in expand_abbrev(cp)[1:]:
-                add(expanded)
 
-    # 6. Скользящие фразы из 3 слов (без стоп-слов и дат)
     meaningful = [w for w in clean_parts if not _is_date_like(w) and not w.isdigit()]
+
+    # 5. Скользящие фразы из 3 слов — конкретнее одиночных слов, идут первыми
     for i in range(len(meaningful) - 2):
         phrase = " ".join(meaningful[i:i + 3])
         if len(phrase) >= 8:
             add(phrase)
 
-    # 7. Скользящие фразы из 2 слов
+    # 6. Скользящие фразы из 2 слов
     for i in range(len(meaningful) - 1):
         phrase = " ".join(meaningful[i:i + 2])
         if len(phrase) >= 6:
             add(phrase)
 
-    # 8. CamelCase отдельные слова — самые общие, идут последними
+    # 7. Одиночные слова запроса (идут ПОСЛЕ фраз)
+    for cp in clean_parts:
+        if len(cp) >= 4:
+            add(cp)
+
+    # 8. CamelCase отдельные слова — самые общие
     for p in underscore_parts:
         for tok in p.split("_"):
             tok = tok.strip("-")
@@ -209,7 +214,6 @@ def search_query_variants(
             for cw in _split_camel(tok):
                 if len(cw) >= 4:
                     add(cw)
-    # CamelCase обычных слов (без «_»)
     for p in parts:
         if "_" in p:
             continue

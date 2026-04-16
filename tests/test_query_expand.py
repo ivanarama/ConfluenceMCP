@@ -87,11 +87,15 @@ class TestSearchVariants(unittest.TestCase):
         self.assertIn("регламентного", expansions)
         self.assertIn("регл", expansions)  # исходный токен тоже сохраняется
 
-    def test_abbrev_expansion_in_search(self) -> None:
-        """При поиске с «регл.» в вариантах должна быть полная форма «регламент»."""
+    def test_sliding_phrases_before_single_words(self) -> None:
+        """Скользящие фразы должны идти до одиночных слов (фразы конкретнее)."""
         q = "Дата последнего регл. задания надо выключить"
         v = search_query_variants(q, max_variants=24)
-        self.assertIn("регламент", v)
+        # Фраза из 3 слов должна стоять раньше одиночного «Дата»
+        self.assertIn("Дата последнего регл", v)
+        if "Дата последнего регл" in v and "Дата" in v:
+            self.assertLess(v.index("Дата последнего регл"), v.index("Дата"),
+                            msg="3-словная фраза должна быть раньше одиночного слова")
 
     def test_empty(self) -> None:
         self.assertEqual(search_query_variants(""), [])
