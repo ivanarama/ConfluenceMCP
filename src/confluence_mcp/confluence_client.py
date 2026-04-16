@@ -64,6 +64,15 @@ class ConfluenceClient:
         )
         return response.json()
 
+    def get_children(self, content_id: str, limit: int = 25) -> dict[str, Any]:
+        """Дочерние страницы (тип page) для заданного content_id."""
+        limit_int = min(int(limit), 100)
+        response = self._get(
+            f"{self.BASE_URL}/rest/api/content/{content_id}/child/page",
+            params={"limit": limit_int, "expand": "version"},
+        )
+        return response.json()
+
     def get_spaces(self, limit: int = 50) -> dict[str, Any]:
         limit_int = int(limit) if isinstance(limit, (int, str)) else 50
         response = self._get(

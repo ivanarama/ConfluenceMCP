@@ -181,15 +181,38 @@ def search_by_cql(cql: str, limit: int = 10, expand: list[str] | None = None) ->
 
 @mcp.tool()
 def get_page_content(page_id: str) -> str:
-    """Полное содержимое страницы по ID (expand: space, version, body.view)."""
+    """Полное содержимое страницы по ID.
+
+    Возвращает: body.view (HTML), space, version, ancestors (цепочка родителей),
+    children.page (список дочерних страниц с id и title).
+    Используй ancestors и children.page чтобы понять, где искать связанную информацию,
+    если на текущей странице ответа нет.
+    """
     pid = (page_id or "").strip()
     if not pid:
         return json.dumps({"error": "page_id не может быть пустым"}, ensure_ascii=False, indent=2)
 
     result = client.get_content(
         content_id=pid,
-        expand=["space", "version", "body.view"],
+        expand=["space", "version", "body.view", "ancestors", "children.page"],
     )
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@mcp.tool()
+def get_page_children(page_id: str, limit: int = 25) -> str:
+    """Список дочерних страниц (id, title, version) для заданного page_id.
+
+    Полезно когда страница является разделом/оглавлением: ответ на конкретный вопрос
+    часто находится на одной из дочерних страниц.
+    limit: максимум страниц (по умолчанию 25, не более 100).
+    """
+    pid = (page_id or "").strip()
+    if not pid:
+        return json.dumps({"error": "page_id не может быть пустым"}, ensure_ascii=False, indent=2)
+
+    lim = max(1, min(int(limit), 100))
+    result = client.get_children(content_id=pid, limit=lim)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
