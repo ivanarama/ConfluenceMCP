@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from confluence_mcp.query_expand import (  # noqa: E402
+    expand_abbrev,
     extract_page_ids_from_text,
     search_query_variants,
     significant_words,
@@ -68,6 +69,26 @@ class TestSearchVariants(unittest.TestCase):
         self.assertIn("замену", w)
         self.assertIn("ручки", w)
         self.assertIn("питы", w)
+
+    def test_natural_language_question_stopwords_filtered(self) -> None:
+        """Стоп-слова (как, который, надо, это) не должны попадать в поисковые варианты."""
+        q = "Дата последнего регл. задания 13.01.2026 надо выключить регламент который отправляет это сообщение как это сделать ?"
+        v = search_query_variants(q, max_variants=24)
+        stopwords_found = [x for x in v if x.lower() in {"как", "который", "надо", "это"}]
+        self.assertEqual(stopwords_found, [], msg=f"Стоп-слова в вариантах: {stopwords_found}")
+
+    def test_abbrev_expansion_regl(self) -> None:
+        """«регл» расширяется в полные формы слова «регламент»."""
+        expansions = expand_abbrev("регл")
+        self.assertIn("регламент", expansions)
+        self.assertIn("регламентного", expansions)
+        self.assertIn("регл", expansions)  # исходный токен тоже сохраняется
+
+    def test_abbrev_expansion_in_search(self) -> None:
+        """При поиске с «регл.» в вариантах должна быть полная форма «регламент»."""
+        q = "Дата последнего регл. задания надо выключить"
+        v = search_query_variants(q, max_variants=24)
+        self.assertIn("регламент", v)
 
     def test_empty(self) -> None:
         self.assertEqual(search_query_variants(""), [])
