@@ -148,7 +148,7 @@ def search_content(
             except Exception:
                 continue
 
-    for variant in search_query_variants(q, max_variants=14):
+    for variant in search_query_variants(q, max_variants=24):
         if len(merged) >= lim:
             break
         clause = _cql_clause_for_variant(variant)

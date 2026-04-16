@@ -34,6 +34,28 @@ class TestSearchVariants(unittest.TestCase):
         self.assertIn(q, v)
         self.assertTrue(any("Messenger_av_" in x for x in v))
 
+    def test_camelcase_from_underscore_identifier(self) -> None:
+        """CamelCase-части идентификатора с «_» должны быть в вариантах до скользящих фраз."""
+        q = "CRM Messenger_av_ОбновлениеСообщенийВСервисе Дата последнего регл. задания 13.01.2026"
+        v = search_query_variants(q, max_variants=24)
+        # Целый токен после «_»
+        self.assertIn("ОбновлениеСообщенийВСервисе", v)
+        # CamelCase-слова из токена
+        self.assertIn("Обновление", v)
+        self.assertIn("Сообщений", v)
+        self.assertIn("Сервисе", v)
+        # Дата не должна попадать в скользящие фразы (загрязняет поиск)
+        date_phrases = [x for x in v if "13.01.2026" in x and x != q]
+        self.assertEqual(date_phrases, [], msg=f"Дата попала в подфразы: {date_phrases}")
+
+    def test_camelcase_priority_over_sliding(self) -> None:
+        """CamelCase-варианты должны быть среди первых 14, даже при большом запросе."""
+        q = "CRM Messenger_av_ОбновлениеСообщенийВСервисе Дата последнего регл. задания 13.01.2026"
+        v = search_query_variants(q, max_variants=14)
+        top14 = set(v[:14])
+        self.assertIn("ОбновлениеСообщенийВСервисе", top14)
+        self.assertIn("Обновление", top14)
+
     def test_russian_short_words_in_variants(self) -> None:
         q = "делаем замену ручки питы ?"
         v = search_query_variants(q)

@@ -58,6 +58,14 @@ def significant_words(
     return words[:max_words]
 
 
+_DATE_LIKE_RE = re.compile(r"^\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}$")
+
+
+def _is_date_like(token: str) -> bool:
+    """Возвращает True для дат вида 13.01.2026 — плохих поисковых токенов."""
+    return bool(_DATE_LIKE_RE.match(token))
+
+
 def search_query_variants(
     question: str,
     *,
@@ -65,13 +73,13 @@ def search_query_variants(
     max_token_len: int = 240,
 ) -> list[str]:
     """
-    Полная фраза + слова от 4 символов (рус/лат) + фрагменты с «_» + скользящие фразы 2-3 слова
-    + CamelCase разбивка составных идентификаторов.
+    Полная фраза + CamelCase разбивка идентификаторов с «_» (высокий приоритет)
+    + слова от 4 символов + скользящие фразы 2-3 слова.
 
-    Скользящие фразы позволяют найти страницы по частичному совпадению
-    («Дата последнего регл. задания» → «Дата последнего», «последнего регл» и т.д.).
-    CamelCase разбивка помогает с именами регламентов 1С/ERP
-    («ОбновлениеСообщенийВСервисе» → «Обновление Сообщений Сервисе»).
+    Порядок приоритетов намеренный: CamelCase-части имён регламентов 1С/ERP
+    («ОбновлениеСообщенийВСервисе» → «Обновление», «Сообщений», «Сервисе»)
+    дают самый точный результат и поэтому идут ДО скользящих фраз.
+    Скользящие фразы полезны для поиска по обычному тексту, но занимают много слотов.
     """
     q = (question or "").strip()
     if not q:
@@ -91,47 +99,59 @@ def search_query_variants(
     # 1. Полная фраза
     add(q)
 
-    # 2. Фрагменты с «_» (имена регламентов, объектов 1С/ERP)
+    # 2. Фрагменты с «_» (имена регламентов, объектов 1С/ERP) + их CamelCase-разбивка
     parts = re.split(r"\s+", q)
     for p in sorted((x for x in parts if "_" in x and len(x) >= 6), key=len, reverse=True):
         add(p)
+        # CamelCase каждого токена внутри идентификатора с «_» — высокий приоритет
+        for tok in p.split("_"):
+            tok = tok.strip("-")
+            if len(tok) < 4:
+                continue
+            # Сам токен целиком (например «ОбновлениеСообщенийВСервисе»)
+            add(tok)
+            camel_words = _split_camel(tok)
+            if len(camel_words) > 1:
+                add(" ".join(camel_words))
+                for cw in camel_words:
+                    if len(cw) >= 4:
+                        add(cw)
 
-    # 3. Каждое слово отдельно (очищаем знаки препинания по краям)
+    # 3. Каждое слово отдельно (очищаем знаки препинания по краям; даты пропускаем)
     clean_parts: list[str] = []
     for p in parts:
         cp = re.sub(r"^[\s?!.,;:«»\"'()\[\]]+|[\s?!.,;:«»\"'()\[\]]+$", "", p)
         if len(cp) >= 3:
             clean_parts.append(cp)
-        if len(cp) >= 4:
+        if len(cp) >= 4 and not _is_date_like(cp):
             add(cp)
 
-    # 4. Скользящие фразы из 3 слов (ключевые для поиска по фрагменту текста)
-    for i in range(len(clean_parts) - 2):
-        phrase = " ".join(clean_parts[i:i + 3])
+    # 4. Скользящие фразы из 3 слов (только нечисловые токены)
+    meaningful = [w for w in clean_parts if not _is_date_like(w) and not w.isdigit()]
+    for i in range(len(meaningful) - 2):
+        phrase = " ".join(meaningful[i:i + 3])
         if len(phrase) >= 8:
             add(phrase)
 
     # 5. Скользящие фразы из 2 слов
-    for i in range(len(clean_parts) - 1):
-        phrase = " ".join(clean_parts[i:i + 2])
+    for i in range(len(meaningful) - 1):
+        phrase = " ".join(meaningful[i:i + 2])
         if len(phrase) >= 6:
             add(phrase)
 
-    # 6. CamelCase разбивка составных слов (в т.ч. части с «_»)
+    # 6. CamelCase разбивка обычных слов (без «_»)
     for p in parts:
-        tokens = p.split("_")
-        for tok in tokens:
-            tok = tok.strip("-")
-            if len(tok) < 4:
-                continue
-            camel_words = _split_camel(tok)
-            if len(camel_words) > 1:
-                # Фраза из разобранных частей
-                add(" ".join(camel_words))
-                # И каждое слово отдельно
-                for cw in camel_words:
-                    if len(cw) >= 4:
-                        add(cw)
+        if "_" in p:
+            continue  # уже обработано в шаге 2
+        tok = re.sub(r"^[\s?!.,;:«»\"'()\[\]]+|[\s?!.,;:«»\"'()\[\]]+$", "", p).strip("-")
+        if len(tok) < 4:
+            continue
+        camel_words = _split_camel(tok)
+        if len(camel_words) > 1:
+            add(" ".join(camel_words))
+            for cw in camel_words:
+                if len(cw) >= 4:
+                    add(cw)
 
     # 7. Значимые слова по длине (финальное добивание, если лимит не исчерпан)
     for w in significant_words(q, min_len=4, max_words=12):
