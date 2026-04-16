@@ -1,5 +1,10 @@
 FROM python:3.12-slim
 
+# Git commit hash passed at build time:
+#   docker compose build --build-arg GIT_COMMIT=$(git rev-parse --short HEAD)
+ARG GIT_COMMIT=unknown
+ENV GIT_COMMIT=${GIT_COMMIT}
+
 # Set working directory
 WORKDIR /app
 
@@ -25,7 +30,6 @@ ENV MCP_PORT=8003
 ENV MCP_HOST=0.0.0.0
 
 # Expose the MCP port
-EXPOSE 8000
+EXPOSE 8003
 
-# Run the server with SSE transport
 CMD ["python", "-m", "confluence_mcp.server"]

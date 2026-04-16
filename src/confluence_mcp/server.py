@@ -230,7 +230,10 @@ def list_spaces(limit: int = 50) -> str:
 
 
 def _git_commit() -> str:
-    """Возвращает короткий git-хэш текущего коммита или 'unknown'."""
+    """Возвращает короткий git-хэш: сначала из ENV (вшитой при docker build), затем через git."""
+    env_val = os.getenv("GIT_COMMIT", "").strip()
+    if env_val and env_val != "unknown":
+        return env_val
     try:
         return subprocess.check_output(
             ["git", "rev-parse", "--short", "HEAD"],

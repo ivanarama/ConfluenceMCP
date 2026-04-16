@@ -1,6 +1,9 @@
 services:
   confluence-mcp:
-    build: .
+    build:
+      context: .
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     container_name: confluence-mcp-server
     restart: unless-stopped
     ports:
