@@ -10,6 +10,9 @@ from typing import Any
 
 from fastmcp import FastMCP
 from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 from .confluence_client import ConfluenceClient
 from .config import get_config
@@ -264,12 +267,34 @@ def confluence_health() -> str:
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
+async def http_health(request: Request) -> JSONResponse:
+    """GET /health — версия сервера и доступность Confluence. Открывается в браузере."""
+    git = _git_commit()
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    try:
+        u = client.get_current_user()
+        body = {
+            "ok": True,
+            "git_commit": git,
+            "checked_at": now,
+            "confluence_user": u.get("displayName") or u.get("username"),
+            "confluence_url": config.base_url,
+        }
+        status = 200
+    except Exception as exc:  # noqa: BLE001
+        body = {"ok": False, "git_commit": git, "checked_at": now, "error": str(exc)}
+        status = 503
+    return JSONResponse(body, status_code=status)
+
+
 if __name__ == "__main__":
     import uvicorn
 
     sse_app = mcp.http_app(transport="sse")
     streamable_http_app = mcp.http_app(transport="streamable-http", path="/mcp")
 
-    app = Starlette(routes=streamable_http_app.routes + sse_app.routes)
+    app = Starlette(
+        routes=[Route("/health", http_health)] + streamable_http_app.routes + sse_app.routes
+    )
 
     uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT)
