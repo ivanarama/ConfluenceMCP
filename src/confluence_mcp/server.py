@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
+import subprocess
 from typing import Any
 
 from fastmcp import FastMCP
@@ -224,9 +226,28 @@ def list_spaces(limit: int = 50) -> str:
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
+def _git_commit() -> str:
+    """Возвращает короткий git-хэш текущего коммита или 'unknown'."""
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(__file__),
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:
+        return "unknown"
+
+
 @mcp.tool()
 def confluence_health() -> str:
-    """Проверка доступности Confluence и учётных данных (GET /rest/api/user/current)."""
+    """Проверка доступности Confluence, учётных данных и версии сервера.
+
+    Поле git_commit показывает хэш коммита, из которого собран контейнер.
+    Используй его чтобы убедиться, что запущена нужная версия кода.
+    """
+    git = _git_commit()
+    started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     try:
         u: dict[str, Any] = client.get_current_user()
         payload = {
@@ -235,9 +256,11 @@ def confluence_health() -> str:
             "userKey": u.get("userKey"),
             "displayName": u.get("displayName"),
             "type": u.get("type"),
+            "git_commit": git,
+            "checked_at": started_at,
         }
     except Exception as exc:  # noqa: BLE001 — отдаём ошибку клиенту MCP как JSON
-        payload = {"ok": False, "error": str(exc)}
+        payload = {"ok": False, "error": str(exc), "git_commit": git, "checked_at": started_at}
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
