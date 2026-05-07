@@ -14,10 +14,6 @@ COPY requirements.txt .
 # Install dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Optional: noun-only search (pymorphy3)
-ARG INSTALL_NOUN_SEARCH=false
-RUN if [ "$INSTALL_NOUN_SEARCH" = "true" ]; then pip install --no-cache-dir pymorphy3; fi
-
 # Copy source code
 COPY src/ src/
 

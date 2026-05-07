@@ -88,7 +88,7 @@ def search_content(
     content_type: str = "page",
     limit: int = 10,
     multi_pass: bool = True,
-    score_merge: bool = False,
+    score_merge: bool = True,
     score_merge_max_variants: int = 0,
     llm_rewrite: bool = False,
 ) -> str:
@@ -342,12 +342,21 @@ async def http_health(request: Request) -> JSONResponse:
 
 if __name__ == "__main__":
     import uvicorn
+    from contextlib import AsyncExitStack, asynccontextmanager
 
     sse_app = mcp.http_app(transport="sse")
     streamable_http_app = mcp.http_app(transport="streamable-http", path="/mcp")
 
+    @asynccontextmanager
+    async def combined_lifespan(app):
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(sse_app.lifespan(app))
+            await stack.enter_async_context(streamable_http_app.lifespan(app))
+            yield
+
     app = Starlette(
-        routes=[Route("/health", http_health)] + streamable_http_app.routes + sse_app.routes
+        routes=[Route("/health", http_health)] + streamable_http_app.routes + sse_app.routes,
+        lifespan=combined_lifespan,
     )
 
     uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT)

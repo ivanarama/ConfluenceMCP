@@ -1,174 +1,207 @@
 # MCP Server for Confluence Search
 
-MCP (Model Context Protocol) server for searching internal Confluence documentation. Supports **SSE** and **streamable-http** transports for HTTP-based communication with **Basic Authentication**.
+MCP (Model Context Protocol) сервер для поиска по внутренней документации Confluence. Поддерживает **SSE** и **streamable-http** транспорты, **Basic Auth**.
 
-## Features
+## Быстрый старт
 
-- **Keyword Search**: Search content by keywords with optional space and content type filters (CQL string escaping for quotes in queries)
-- **CQL Search**: Advanced search using Confluence Query Language
-- **Page Content**: Retrieve full page content by ID
-- **Space Listing**: List all available Confluence spaces
-- **Health Check**: `confluence_health` — verify Confluence URL and credentials via `/rest/api/user/current`
-- **Clearer HTTP errors**: 4xx/5xx responses include a truncated body snippet from Confluence
-- **Multiple Transports**: SSE, streamable-http, and stdio
-- **MCP SuperAssistant Compatible**: Works with MCP SuperAssistant Proxy
-- **Basic Auth**: Uses username + password (local) or email + API token (cloud)
+```bash
+cp .env.example .env          # скопировать шаблон
+# заполнить .env (минимум: CONFLUENCE_BASE_URL, CONFLUENCE_USERNAME, CONFLUENCE_API_TOKEN)
+docker compose up -d --build  # собрать и запустить
+```
 
-## Installation
+Сервер доступен по адресу `http://localhost:8003/sse`.
 
-### Option 1: Docker (Recommended)
+## Конфигурация (.env)
 
-#### 1. Create Environment File
-
-Copy `.env.example` to `.env` and fill in your credentials:
+Все настройки — в одном файле `.env`. Скопируйте `.env.example` и заполните:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
-```
-CONFLUENCE_BASE_URL=https://your-domain.atlassian.net/wiki
-CONFLUENCE_USERNAME=your-email@example.com
-CONFLUENCE_API_TOKEN=your-api-token-here
-MCP_PORT=8003
-```
+### Обязательные
 
-#### 2. Build and Run with Docker Compose
+| Переменная | Описание |
+|---|---|
+| `CONFLUENCE_BASE_URL` | URL Confluence (локальный или Cloud) |
+| `CONFLUENCE_USERNAME` | Логин (для Cloud — email) |
+| `CONFLUENCE_API_TOKEN` | Пароль (для Cloud — API token) |
 
-```bash
-docker-compose up -d
-```
+### Опциональные
 
-The server will be available at `http://localhost:8003/sse`
+| Переменная | По умолч. | Описание |
+|---|---|---|
+| `MCP_PORT` | `8003` | Порт сервера |
+| `CONFLUENCE_TIMEOUT` | `30` | Таймаут HTTP-запросов к Confluence (секунды, минимум 5) |
+| `SCORE_MERGE_MAX_VARIANTS` | `12` | Макс. число вариантов запроса при score-based поиске (4–24) |
+| `LLM_REWRITE_ENDPOINT` | _(пусто)_ | URL OpenAI-совместимого API для переформулировки запросов |
+| `LLM_REWRITE_MODEL` | _(пусто)_ | Имя модели (например `qwen2.5`) |
+| `LLM_REWRITE_API_KEY` | _(пусто)_ | API-ключ (если не нужен — оставить пустым) |
+| `LLM_REWRITE_TIMEOUT` | `5` | Таймаут LLM-запроса (секунды) |
 
-### Option 2: Local Installation
+### Как получить credentials
 
-#### 1. Install Dependencies
+**Локальный Confluence (on-premise):** используйте логин и пароль от учётной записи.
 
-```bash
-pip install -r requirements.txt
-```
+**Atlassian Cloud:**
+1. Перейдите https://id.atlassian.com/manage-profile/security/api-tokens
+2. Создайте API token
+3. В качестве `CONFLUENCE_USERNAME` укажите email, в качестве `CONFLUENCE_API_TOKEN` — созданный token
 
-#### 2. Configure Environment
+## Инструменты (Tools)
 
-Copy `.env.example` to `.env` and fill in your credentials:
+### `search_content`
 
-```bash
-cp .env.example .env
-```
+Поиск страниц по ключевым словам. По умолчанию (`multi_pass=true`) сервер:
+- извлекает `pageId` из Confluence-ссылок в запросе
+- генерирует несколько вариантов поиска (полная фраза, токены с `_`, длинные слова)
+- выполняет CQL-запросы по каждому варианту и объединяет результаты без дубликатов
 
-## Getting Confluence Credentials
+**Параметры:**
 
-### For Local/On-Premise Confluence
+| Параметр | Тип | По умолч. | Описание |
+|---|---|---|---|
+| `query` | string | _(обязательный)_ | Поисковый запрос |
+| `space_key` | string | `null` | Ключ пространства или несколько через запятую (`DEV, HR`) |
+| `space_keys` | string[] | `null` | Список ключей пространств (предпочтительно для нескольких) |
+| `content_type` | string | `"page"` | Тип: `page`, `blogpost`, `comment`, `attachment`, `space`, `all` |
+| `limit` | int | `10` | Макс. результатов (до 100) |
+| `multi_pass` | bool | `true` | Расширенный поиск по нескольким вариантам |
+| `score_merge` | bool | `false` | Ранжирование по score (см. ниже) |
+| `score_merge_max_variants` | int | `0` | Лимит вариантов (0 = из конфига, `SCORE_MERGE_MAX_VARIANTS`) |
+| `llm_rewrite` | bool | `false` | Переформулировать запрос через LLM перед поиском |
 
-1. **Get Confluence URL** — usually `http://localhost:8090/wiki` or your server URL
-2. **Use your username and password** — the same credentials you use to login to Confluence
-
-Example `.env`:
-```
-CONFLUENCE_BASE_URL=http://localhost:8090/wiki
-CONFLUENCE_USERNAME=admin
-CONFLUENCE_API_TOKEN=your-password
-```
-
-### For Atlassian Cloud
-
-If you're using Atlassian Cloud, you need an API token:
-1. Go to: https://id.atlassian.com/manage-profile/security/api-tokens
-2. Click "Create API token"
-3. Use your email as username and the API token as password
-
-## Usage
-
-### Running the Server
-
-#### Docker (Recommended):
-```bash
-docker-compose up
-```
-
-The server starts on `http://localhost:8003/sse`
-
-#### Local:
-```bash
-python -m confluence_mcp.server
-```
-
-Or set custom port:
-```bash
-MCP_PORT=8080 python -m confluence_mcp.server
-```
-
-### Available Tools
-
-#### `search_content`
-Keyword search with optional filters. By default (`multi_pass=true`) the server also:
-extracts `pageId` from Confluence URLs in the query, runs several CQL passes (full text plus
-meaningful tokens such as names with underscores), uses `title ~` OR `text ~` for short variants,
-merges unique hits. Set `multi_pass=false` for legacy single-query `text ~` only.
-
-**Parameters:**
-- `query` (required): Keywords to search for
-- `space_key` (optional): One space key, or several comma-separated (e.g. `DEV, HR`)
-- `space_keys` (optional): List of space keys (preferred for multiple spaces; CQL uses OR)
-- `content_type` (optional): Content type - "page", "blogpost", or "all" (default: "page")
-- `limit` (optional): Max results, default 10 (max 100)
-- `multi_pass` (optional): Enable expanded search (default: `true`)
-
-**Example:**
 ```json
-search_content(query="API documentation", space_key="DEV", limit=5)
+search_content(query="оформить звонок директорат", score_merge=true)
 ```
 
-#### `search_by_cql`
-Advanced search using CQL (Confluence Query Language).
+### `search_by_cql`
 
-**Parameters:**
-- `cql` (required): CQL query string
-- `limit` (optional): Max results, default 10
-- `expand` (optional): Fields to expand (space, version, container, etc.)
+Поиск по произвольной CQL-строке.
 
-**Example:**
+| Параметр | Тип | По умолч. | Описание |
+|---|---|---|---|
+| `cql` | string | _(обязательный)_ | CQL-запрос |
+| `limit` | int | `10` | Макс. результатов |
+| `expand` | string[] | `["space","version"]` | Дополнительные поля |
+
+### `get_page_content`
+
+Полное содержимое страницы по ID. Возвращает HTML (`body.view`), пространство, версию, цепочку родителей (`ancestors`) и дочерние страницы (`children.page`).
+
+### `get_page_children`
+
+Список дочерних страниц (id, title, version) для заданного page_id.
+
+### `list_spaces`
+
+Список всех пространств Confluence.
+
+### `confluence_health`
+
+Проверка доступности Confluence и учётных данных. Возвращает имя пользователя и git-хэш сборки.
+
+## Умный поиск
+
+### Проблема
+
+Запрос «КАК ОФОРМИТЬ ЗВОНОК В ДИРЕКТОРАТ» не находит статью со словом «принять», потому что:
+- «оформить» и «принять» — лексически разные слова, Confluence не связывает их
+- общий вариант «ЗВОНОК ДИРЕКТОРАТ» существует в обоих контекстах, но ранние варианты заполняют `limit` раньше
+
+Решение — три независимых улучшения, каждое решает свою часть проблемы:
+
+### Улучшение 1: Score-based merging (`score_merge=true`)
+
+**Идея:** запустить ВСЕ варианты запроса, собрать все совпадения, ранжировать по числу вариантов, которые нашли страницу.
+
+Без score_merge сервер останавливается, когда набрал `limit` результатов — первые варианты забивают выдачу. Со score_merge все варианты выполняются до конца, и страница, найденная 5 вариантами, получит более высокий рейтинг, чем страница, найденная одним.
+
+**Веса вариантов:**
+
+| Тип варианта | Вес | Пример |
+|---|---|---|
+| Полная фраза (исходный запрос) | 3.0 | «КАК ОФОРМИТЬ ЗВОНОК В ДИРЕКТОРАТ» |
+| 2–3 слова | 2.0–2.5 | «ОФОРМИТЬ ЗВОНОК» |
+| Одно слово | 1.0 | «ДИРЕКТОРАТ» |
+
+Количество вариантов ограничено `SCORE_MERGE_MAX_VARIANTS` (по умолчанию 12, диапазон 4–24).
+
 ```json
-search_by_cql(cql='space = "DEV" AND type = "page" AND created > "2024-01-01"')
+search_content(query="оформить звонок директорат", score_merge=true)
 ```
 
-#### `get_page_content`
-Get full content of a specific page.
+### Улучшение 2: Noun-only проход (автоматически)
 
-**Parameters:**
-- `page_id` (required): Confluence page ID
+**Идея:** pymorphy3 определяет части речи. Из запроса выделяются только существительные — получается «чистый» вариант без глаголов и предлогов.
 
-**Example:**
+```
+"КАК ОФОРМИТЬ ЗВОНОК В ДИРЕКТОРАТ"  →  "ЗВОНОК ДИРЕКТОРАТ"
+"ПОРЯДОК СОГЛАСОВАНИЯ ДОКУМЕНТОВ"    →  "ПОРЯДОК СОГЛАСОВАНИЕ ДОКУМЕНТ"
+```
+
+Существительные — самые информативные слова в поисковом запросе. Убрав глаголы и предлоги, вариант точнее попадает в заголовки и текст статей. Работает всегда, флагов не требует, внешних зависимостей нет.
+
+### Улучшение 3: LLM-переформулировка (`llm_rewrite=true`)
+
+**Идея:** LLM получает исходный запрос и генерирует 3–5 альтернативных формулировок, используя синонимы и перефразирование.
+
+```
+"КАК ОФОРМИТЬ ЗВОНОК В ДИРЕКТОРАТ"
+  → "принять звонок директорат"
+  → "перевести вызов в директорат"
+  → "маршрутизация звонков директорат"
+```
+
+Это единственный механизм, который понимает синонимы («оформить» = «принять» = «перевести»). Требует настроенных переменных `LLM_REWRITE_*` в `.env`. При ошибке (таймаут, LLM недоступен) тихо откатывается к обычному поиску.
+
 ```json
-get_page_content(page_id="123456")
+search_content(query="оформить звонок директорат", llm_rewrite=true)
 ```
 
-#### `list_spaces`
-List all available Confluence spaces.
+Можно комбинировать оба флага: `score_merge=true, llm_rewrite=true`.
 
-**Parameters:**
-- `limit` (optional): Max spaces to return, default 50 (max 100)
+### Сравнение подходов
 
-**Example:**
-```json
-list_spaces(limit=100)
+| Подход | Зависимости | Покрытие синонимов |
+|---|---|---|
+| **Score merging** | нет | ~40% — ловит через пересечения вариантов |
+| **Noun-only** | pymorphy3 (встроен) | ~60% — убирает глагольный шум |
+| **LLM rewrite** | внешний LLM API | ~90% — понимает синонимы и перефразирование |
+
+### Как это работает вместе
+
+```
+Запрос: "КАК ОФОРМИТЬ ЗВОНОК В ДИРЕКТОРАТ"
+                    │
+    ┌───────────────┼───────────────┐
+    │               │               │
+ Полная фраза   Noun-only       LLM варианты
+ "КАК ОФОРМИТЬ  "ЗВОНОК        "принять звонок
+  ЗВОНОК В       ДИРЕКТОРАТ"    директорат"
+  ДИРЕКТОРАТ"                   "перевести вызов
+    │               │            в директорат"
+    │               │               │
+    └───────────────┼───────────────┘
+                    │
+            Каждый вариант →
+            CQL-запрос к Confluence
+                    │
+                    ▼
+          Score-based ранжирование
+          (страница, найдённая 3+
+          вариантами, будет первой)
+                    │
+                    ▼
+              Результаты
 ```
 
-#### `confluence_health`
-Lightweight check that Confluence is reachable and Basic Auth works (no search).
+## Интеграция
 
-**Example:**
-```json
-confluence_health()
-```
+### Claude Desktop
 
-## Claude Desktop Integration
-
-### Docker (Recommended)
-
-Add to `C:\Users\ibrog\AppData\Roaming\Claude\claude_desktop_config.json`:
+Добавьте в `claude_desktop_config.json`:
 
 ```json
 {
@@ -181,14 +214,9 @@ Add to `C:\Users\ibrog\AppData\Roaming\Claude\claude_desktop_config.json`:
 }
 ```
 
-Start the container:
-```bash
-docker-compose up -d
-```
+### Claude Code (CLI)
 
-### Local Python
-
-Add to `C:\Users\ibrog\AppData\Roaming\Claude\claude_desktop_config.json`:
+Добавьте в `~/.claude/mcp_config.json`:
 
 ```json
 {
@@ -201,33 +229,7 @@ Add to `C:\Users\ibrog\AppData\Roaming\Claude\claude_desktop_config.json`:
 }
 ```
 
-Start the server:
-```bash
-python -m confluence_mcp.server
-```
-
-### Claude Code Integration
-
-For Claude Code (CLI tool), add to your MCP config file (`C:\Users\ibrog\.claude\mcp_config.json` or similar):
-
-```json
-{
-  "mcpServers": {
-    "confluence": {
-      "url": "http://192.168.1.3:8003/sse",
-      "transport": "sse"
-    }
-  }
-}
-```
-
-## MCP SuperAssistant Proxy Integration
-
-This server supports **streamable-http** transport for use with [MCP SuperAssistant Proxy](https://github.com/sammcj/mcp-superassistant-proxy).
-
-### Configuration
-
-Add to your MCP SuperAssistant Proxy config file:
+### MCP SuperAssistant Proxy
 
 ```json
 {
@@ -241,114 +243,54 @@ Add to your MCP SuperAssistant Proxy config file:
 }
 ```
 
-### Endpoints
+## Endpoints
 
-| Endpoint | Method | Description | For |
-|----------|--------|-------------|-----|
-| `/sse` | GET | SSE endpoint info | Claude Code/Claude Desktop |
-| `/messages/` | POST | SSE JSON-RPC messages | Claude Code/Claude Desktop |
-| `/mcp` | GET | SSE endpoint info | SuperAssistant Proxy |
-| `/mcp` | POST | JSON-RPC requests (SSE format) | SuperAssistant Proxy |
+| Endpoint | Метод | Описание |
+|---|---|---|
+| `/sse` | GET | SSE endpoint (Claude Desktop, Claude Code) |
+| `/messages/` | POST | SSE JSON-RPC |
+| `/mcp` | GET/POST | Streamable-HTTP (SuperAssistant Proxy) |
+| `/health` | GET | Статус сервера и Confluence (браузер, curl) |
 
-### Response Format
-
-The `/mcp` endpoint returns responses in SSE format:
-
-```
-event: message
-data: {"jsonrpc":"2.0","id":1,"result":{...}}
-```
-
-This is compatible with MCP SuperAssistant Proxy's `streamable-http` transport type.
-
-### Example curl Test
+### Проверка curl
 
 ```bash
-# Test initialize
-curl -X POST "http://localhost:8003/mcp" \
+# Статус
+curl http://localhost:8003/health
+
+# Инициализация MCP
+curl -X POST http://localhost:8003/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
-
-# Test tools/list
-curl -X POST "http://localhost:8003/mcp" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
-
-# Test tools/call
-curl -X POST "http://localhost:8003/mcp" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_spaces","arguments":{"limit":10}}}'
 ```
 
-### Configuration Options
+## Локальная установка (без Docker)
 
-You can customize the port and host via environment variables:
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MCP_PORT` | `8003` | Port for the MCP server |
-| `MCP_HOST` | `0.0.0.0` | Host to bind to |
-
-After updating the config:
-1. Start the server (Docker or local)
-2. Restart Claude Desktop
-3. In a new chat, use commands like "Search Confluence for API documentation"
-4. Claude will automatically use the available tools
-
-## CQL Reference
-
-Common CQL patterns:
-
-| Query | Description |
-|-------|-------------|
-| `text ~ "keyword"` | Search by keyword |
-| `space = "KEY"` | Filter by space |
-| `type = "page"` | Filter by content type |
-| `creator = "user@example.com"` | Filter by creator |
-| `created > "2024-01-01"` | Filter by creation date |
-| `lastmodified > "-30d"` | Modified in last 30 days |
-
-Combine with `AND`/`OR`:
-
-```
-space = "DEV" AND type = "page" AND (text ~ "API" OR text ~ "REST")
+```bash
+pip install -r requirements.txt
+cp .env.example .env          # заполнить credentials
+python -m confluence_mcp.server
 ```
 
-## Project Structure
+## Структура проекта
 
 ```
 src/confluence_mcp/
-├── __init__.py          # Package initialization
-├── server.py            # MCP server (SSE + streamable-http)
-├── confluence_client.py # Confluence REST client with Basic Auth
-├── config.py            # Environment configuration
-└── cql_escape.py        # CQL string literal escaping
+├── server.py            # MCP сервер (SSE + streamable-http), инструменты
+├── confluence_client.py # REST-клиент Confluence (Basic Auth)
+├── config.py            # Конфигурация из .env
+├── cql_escape.py        # Экранирование CQL-строк
+├── query_expand.py      # Генерация вариантов поискового запроса
+├── scoring.py           # Score-based ранжирование результатов
+├── noun_extract.py      # Выделение существительных (pymorphy3)
+└── llm_rewrite.py       # LLM-переформулировка запросов
 
 tests/
-└── test_cql_escape.py   # Unit tests (run: python tests/test_cql_escape.py -v)
+└── test_cql_escape.py   # python tests/test_cql_escape.py -v
 ```
 
-## Docker
-
-### Build
-```bash
-docker build -t confluence-mcp .
-```
-
-### Run
-```bash
-docker run -p 8003:8003 --env-file .env confluence-mcp
-```
-
-### With Docker Compose
-```bash
-docker-compose up -d
-docker-compose logs -f
-docker-compose down
-```
-
-## Requirements
+## Требования
 
 - Python 3.10+
-- Confluence access (local or cloud, with Basic Auth)
-- Docker (optional, for containerized deployment)
+- Docker (рекомендуется)
+- Confluence (локальный или Cloud) с Basic Auth
