@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from .noun_extract import has_pymorphy3, noun_phrase
+
 # Слова, которые точно не встречаются в технической документации:
 # вопросительные, указательные, дискурсные, личные местоимения.
 # Намеренно НЕ включаем: регламент, задание, сообщение, выключить —
@@ -152,6 +154,12 @@ def search_query_variants(
 
     # 1. Полная фраза
     add(q)
+
+    # 1b. Noun-only phrase (высокий приоритет, если pymorphy3 доступен)
+    if has_pymorphy3():
+        np = noun_phrase(q)
+        if np and np != q:
+            add(np)
 
     parts = re.split(r"\s+", q)
     underscore_parts = sorted(

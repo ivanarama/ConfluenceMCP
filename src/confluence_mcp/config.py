@@ -14,6 +14,7 @@ class Config:
     username: str
     api_token: str
     request_timeout: float = 30.0
+    score_merge_max_variants: int = 12
 
 
 def get_config() -> Config:
@@ -50,9 +51,16 @@ def get_config() -> Config:
     except ValueError:
         request_timeout = 30.0
 
+    score_max_raw = os.getenv("SCORE_MERGE_MAX_VARIANTS", "12")
+    try:
+        score_merge_max_variants = max(4, min(int(score_max_raw), 24))
+    except ValueError:
+        score_merge_max_variants = 12
+
     return Config(
         base_url=base_url.rstrip("/"),
         username=username,
         api_token=api_token,
         request_timeout=request_timeout,
+        score_merge_max_variants=score_merge_max_variants,
     )

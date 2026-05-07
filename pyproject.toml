@@ -12,3 +12,6 @@ dependencies = [
 
 [project.scripts]
 confluence-mcp = "confluence_mcp.server:mcp.run"
+
+[project.optional-dependencies]
+noun-search = ["pymorphy3>=0.2.0"]

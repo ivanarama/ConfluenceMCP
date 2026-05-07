@@ -4,6 +4,7 @@ services:
       context: .
       args:
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        INSTALL_NOUN_SEARCH: ${INSTALL_NOUN_SEARCH:-false}
     container_name: confluence-mcp-server
     restart: unless-stopped
     ports:
@@ -14,3 +15,8 @@ services:
       - CONFLUENCE_API_TOKEN=${CONFLUENCE_API_TOKEN}
       - MCP_PORT=${MCP_PORT:-8003}
       - MCP_HOST=0.0.0.0
+      - SCORE_MERGE_MAX_VARIANTS=${SCORE_MERGE_MAX_VARIANTS:-12}
+      - LLM_REWRITE_ENDPOINT=${LLM_REWRITE_ENDPOINT:-}
+      - LLM_REWRITE_MODEL=${LLM_REWRITE_MODEL:-}
+      - LLM_REWRITE_API_KEY=${LLM_REWRITE_API_KEY:-}
+      - LLM_REWRITE_TIMEOUT=${LLM_REWRITE_TIMEOUT:-5}

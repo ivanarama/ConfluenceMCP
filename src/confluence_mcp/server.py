@@ -88,6 +88,9 @@ def search_content(
     content_type: str = "page",
     limit: int = 10,
     multi_pass: bool = True,
+    score_merge: bool = False,
+    score_merge_max_variants: int = 0,
+    llm_rewrite: bool = False,
 ) -> str:
     """Поиск страниц в Confluence (CQL).
 
@@ -98,6 +101,9 @@ def search_content(
     Фильтр пространств: space_keys (список ключей) или один space_key; в space_key можно через запятую
     несколько ключей. Пусто — поиск по всем пространствам.
     content_type: page | blogpost | comment | attachment | space | all
+    score_merge: true — запустить все варианты, ранжировать по числу совпавших (score-based merging).
+    score_merge_max_variants: макс. число вариантов для score_merge (0 = из конфига, по умолч. 12).
+    llm_rewrite: true — переформулировать запрос через LLM перед поиском (требует LLM_REWRITE_ENDPOINT).
     """
     q = (query or "").strip()
     if not q:
@@ -140,31 +146,75 @@ def search_content(
             seen.add(iid)
             merged.append(item)
 
+    # --- LLM rewrite: generate alternative phrasings ---
+    llm_variants: list[str] = []
+    if llm_rewrite and multi_pass:
+        from .llm_rewrite import is_llm_rewrite_enabled, rewrite_query
+
+        if is_llm_rewrite_enabled():
+            llm_variants = rewrite_query(q)
+
+    # --- Page-ID lookups (same for both modes) ---
     id_suffix = _cql_type_only_suffix(ct)
+    id_hits: list[dict[str, Any]] = []
     for pid in extract_page_ids_from_text(q):
-        if len(merged) >= lim:
+        if not score_merge and len(merged) >= lim:
             break
         id_queries = [f"id = {pid}", f'id = "{escape_cql_string(pid)}"']
         for id_cql in id_queries:
             try:
                 data = client.search(cql=id_cql + id_suffix, limit=1, expand=["space", "version"])
-                take(data.get("results", []))
+                results = data.get("results", [])
+                if score_merge:
+                    id_hits.extend(results)
+                else:
+                    take(results)
                 break
             except Exception:
                 continue
 
-    for variant in search_query_variants(q, max_variants=24):
-        if len(merged) >= lim:
-            break
-        clause = _cql_clause_for_variant(variant)
-        full_cql = clause + suffix
-        need = lim - len(merged)
-        fetch = min(max(need + 3, 5), 50)
-        try:
-            data = client.search(cql=full_cql, limit=fetch, expand=["space", "version"])
-            take(data.get("results", []))
-        except Exception:
-            continue
+    # --- Build variant list ---
+    max_var = score_merge_max_variants if score_merge_max_variants > 0 else config.score_merge_max_variants
+    all_variants = llm_variants + search_query_variants(q, max_variants=max_var if score_merge else 24)
+
+    # --- Score-based merging ---
+    if score_merge:
+        from .scoring import score_results, variant_weight
+
+        all_variant_hits: list[list[dict[str, Any]]] = []
+        variant_weights: list[float] = []
+
+        if id_hits:
+            all_variant_hits.append(id_hits)
+            variant_weights.append(3.0)
+
+        for variant in all_variants:
+            clause = _cql_clause_for_variant(variant)
+            full_cql = clause + suffix
+            try:
+                data = client.search(cql=full_cql, limit=min(lim + 5, 50), expand=["space", "version"])
+                hits = data.get("results", [])
+                all_variant_hits.append(hits)
+                variant_weights.append(variant_weight(variant, q))
+            except Exception:
+                continue
+
+        scored = score_results(all_variant_hits, weights=variant_weights, limit=lim)
+        merged = [s.item for s in scored]
+    else:
+        # --- Original first-come-first-serve logic ---
+        for variant in all_variants:
+            if len(merged) >= lim:
+                break
+            clause = _cql_clause_for_variant(variant)
+            full_cql = clause + suffix
+            need = lim - len(merged)
+            fetch = min(max(need + 3, 5), 50)
+            try:
+                data = client.search(cql=full_cql, limit=fetch, expand=["space", "version"])
+                take(data.get("results", []))
+            except Exception:
+                continue
 
     payload = {"results": merged[:lim], "size": len(merged[:lim])}
     return json.dumps(payload, indent=2, ensure_ascii=False)
