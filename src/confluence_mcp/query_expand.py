@@ -99,6 +99,29 @@ def _is_stopword(token: str) -> bool:
     return token.lower() in _RU_STOPWORDS
 
 
+# Короткие русские слова, которые не являются аббревиатурами,
+# даже если написаны в верхнем регистре (в запросах ВСЕГДА CAPS).
+_NOT_ABBREV: frozenset[str] = frozenset({
+    "до", "на", "в", "к", "с", "по", "из", "за", "и", "о", "у",
+    "но", "а", "не", "то", "со", "ко", "бы", "ли", "же", "уж",
+})
+
+_RU_VOWELS = frozenset("аеёиоуыэюя")
+
+
+def _is_abbrev(token: str) -> bool:
+    """Аббревиатуры: ХД, МСК, РФ, НДС, IT, HR, API.
+    Не предлоги (ДО, НА) и не обычные слова (ЧАСА, МОЖНО)."""
+    if len(token) < 2 or token.upper() != token or not token.isalpha():
+        return False
+    if token.lower() in _NOT_ABBREV:
+        return False
+    if token.isascii():
+        return True
+    # Русские аббревиатуры состоят только из согласных: ХД, МСК, КВ, РФ
+    return not any(c.lower() in _RU_VOWELS for c in token)
+
+
 def expand_abbrev(token: str) -> list[str]:
     """Возвращает полные формы для известных 1С-аббревиатур (+ сам токен).
 
@@ -161,6 +184,16 @@ def search_query_variants(
         if np and np != q:
             add(np)
 
+    # 1c. Аббревиатуры из запроса: отдельные + пары (ХД МСК, IT HR)
+    #     Высокий приоритет — короткие, но очень точные маркеры.
+    abbrevs = [p for p in re.split(r"\s+", q) if _is_abbrev(p)]
+    for a in abbrevs:
+        add(a)
+    if len(abbrevs) >= 2:
+        for i in range(len(abbrevs)):
+            for j in range(i + 1, len(abbrevs)):
+                add(f"{abbrevs[i]} {abbrevs[j]}")
+
     parts = re.split(r"\s+", q)
     underscore_parts = sorted(
         (x for x in parts if "_" in x and len(x) >= 6), key=len, reverse=True
@@ -191,7 +224,7 @@ def search_query_variants(
     clean_parts: list[str] = []
     for p in parts:
         cp = re.sub(r"^[\s?!.,;:«»\"'()\[\]]+|[\s?!.,;:«»\"'()\[\]]+$", "", p)
-        if len(cp) >= 3 and not _is_stopword(cp) and not _is_date_like(cp):
+        if (len(cp) >= 3 or _is_abbrev(cp)) and not _is_stopword(cp) and not _is_date_like(cp):
             clean_parts.append(cp)
 
     meaningful = [w for w in clean_parts if not _is_date_like(w) and not w.isdigit()]
@@ -209,8 +242,9 @@ def search_query_variants(
             add(phrase)
 
     # 7. Одиночные слова запроса (идут ПОСЛЕ фраз)
+    # Аббревиатуры (ХД, МСК, IT) проходят при len >= 2, остальные — len >= 4
     for cp in clean_parts:
-        if len(cp) >= 4:
+        if len(cp) >= 4 or _is_abbrev(cp):
             add(cp)
 
     # 8. CamelCase отдельные слова — самые общие
