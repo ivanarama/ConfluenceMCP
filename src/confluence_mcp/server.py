@@ -90,7 +90,7 @@ def search_content(
     multi_pass: bool = True,
     score_merge: bool = True,
     score_merge_max_variants: int = 0,
-    llm_rewrite: bool = False,
+    llm_rewrite: bool = True,
 ) -> str:
     """Поиск страниц в Confluence (CQL).
 
@@ -148,11 +148,13 @@ def search_content(
 
     # --- LLM rewrite: generate alternative phrasings ---
     llm_variants: list[str] = []
+    llm_used = False
     if llm_rewrite and multi_pass:
         from .llm_rewrite import is_llm_rewrite_enabled, rewrite_query
 
         if is_llm_rewrite_enabled():
             llm_variants = rewrite_query(q)
+            llm_used = len(llm_variants) > 0
 
     # --- Page-ID lookups (same for both modes) ---
     id_suffix = _cql_type_only_suffix(ct)
@@ -216,7 +218,14 @@ def search_content(
             except Exception:
                 continue
 
-    payload = {"results": merged[:lim], "size": len(merged[:lim])}
+    payload: dict[str, Any] = {
+        "results": merged[:lim],
+        "size": len(merged[:lim]),
+        "variants": len(all_variants),
+        "llm": llm_used,
+    }
+    if llm_used:
+        payload["llm_variants"] = llm_variants
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
