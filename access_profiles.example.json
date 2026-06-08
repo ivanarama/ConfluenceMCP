@@ -1,0 +1,10 @@
+{
+  "_comment": "Скопируйте в access_profiles.json и заполните. Реальный файл в .gitignore.",
+  "app_secret": "СГЕНЕРИРУЙТЕ_ДЛИННЫЙ_СЛУЧАЙНЫЙ_СЕКРЕТ",
+  "default_profile": "guest",
+  "profiles": {
+    "guest":   { "spaces": ["KB1C"] },
+    "support": { "spaces": ["KB1C", "DNBS"] },
+    "admin":   { "spaces": ["*"] }
+  }
+}

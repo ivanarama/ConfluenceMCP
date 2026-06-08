@@ -1,6 +1,9 @@
 # Environment variables with secrets
 .env
 
+# Access profiles with app_secret (use access_profiles.example.json as template)
+access_profiles.json
+
 # Claude Code local settings
 .claude/settings.local.json
 

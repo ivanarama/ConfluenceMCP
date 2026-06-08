@@ -17,6 +17,7 @@ from starlette.routing import Route
 from .confluence_client import ConfluenceClient
 from .config import get_config
 from .cql_escape import escape_cql_string
+from .identity import current_profile, get_allowed_spaces, has_full_access, resolve_profile
 from .query_expand import extract_page_ids_from_text, search_query_variants
 
 config = get_config()
@@ -62,6 +63,92 @@ def _cql_space_type_suffix(
     if not parts:
         return ""
     return " AND " + " AND ".join(parts)
+
+
+_DENIED_MARKER = object()
+
+
+def _resolve_space_filter(
+    space_key: str | None,
+    space_keys: list[str] | None,
+) -> tuple[list[str] | None, bool]:
+    """Свести запрошенные пользователем пространства к разрешённым профилем.
+
+    Возвращает (effective, denied):
+      effective — список ключей для фильтра CQL, либо None (без ограничения по space);
+      denied    — True, если пользователь запросил только запрещённые пространства
+                  (нужно вернуть пустой результат, ничего не показывая).
+    Клиентскому списку не доверяем: он может только сузить доступ в пределах разрешённого.
+    """
+    requested = _normalize_space_keys(space_key, space_keys)
+    allowed = get_allowed_spaces()
+
+    if has_full_access(allowed):
+        return (requested or None), False
+
+    if not allowed:
+        return [], True
+
+    if requested:
+        effective = [k for k in requested if k in allowed]
+        return effective, len(effective) == 0
+    return list(allowed), False
+
+
+def _cql_space_keys_clause(keys: list[str]) -> str:
+    """`space in ("A","B")` для непустого списка ключей."""
+    inner = ", ".join(f'"{escape_cql_string(k)}"' for k in keys)
+    return f"space in ({inner})"
+
+
+def _apply_cql_access(cql: str) -> tuple[str | None, bool]:
+    """Ограничить сырой CQL разрешёнными профилю пространствами.
+
+    Возвращает (cql, denied): при denied=True доступа к пространствам нет — вернуть пусто.
+    Для wildcard CQL не меняется.
+    """
+    allowed = get_allowed_spaces()
+    if has_full_access(allowed):
+        return cql, False
+    if not allowed:
+        return None, True
+    return f"({cql}) AND {_cql_space_keys_clause(allowed)}", False
+
+
+def _space_allowed(space_key: str | None) -> bool:
+    """True, если пространство доступно текущему профилю."""
+    allowed = get_allowed_spaces()
+    if has_full_access(allowed):
+        return True
+    return bool(space_key) and space_key in set(allowed)
+
+
+def _denied_space_response() -> str:
+    return json.dumps(
+        {"error": "Доступ к пространству запрещён"},
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _filter_results_by_space(results: list[Any]) -> list[Any]:
+    """Оставить только результаты из разрешённых профилю пространств.
+
+    Защита «в глубину»: подстраховывает CQL-фильтр и закрывает поиск по id из ссылок
+    (он намеренно не режется по space, чтобы найти страницу, см. _cql_type_only_suffix).
+    """
+    allowed = get_allowed_spaces()
+    if has_full_access(allowed):
+        return results
+    allowed_set = set(allowed)
+    out: list[Any] = []
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        space_key = (r.get("space") or {}).get("key")
+        if space_key in allowed_set:
+            out.append(r)
+    return out
 
 
 def _cql_type_only_suffix(content_type: str) -> str:
@@ -125,12 +212,20 @@ def search_content(
         )
 
     lim = max(1, min(int(limit), 100))
-    suffix = _cql_space_type_suffix(space_key, space_keys, ct)
+    effective_spaces, denied = _resolve_space_filter(space_key, space_keys)
+    if denied:
+        return json.dumps(
+            {"results": [], "size": 0, "variants": 0, "llm": False},
+            ensure_ascii=False,
+            indent=2,
+        )
+    suffix = _cql_space_type_suffix(None, effective_spaces, ct)
 
     if not multi_pass:
         safe = escape_cql_string(q)
         cql = f'text ~ "{safe}"' + suffix
         result = client.search(cql=cql, limit=lim, expand=["space", "version"])
+        result["results"] = _filter_results_by_space(result.get("results", []))
         return json.dumps(result, indent=2, ensure_ascii=False)
 
     merged: list[dict[str, Any]] = []
@@ -218,6 +313,8 @@ def search_content(
             except Exception:
                 continue
 
+    merged = _filter_results_by_space(merged)
+
     payload: dict[str, Any] = {
         "results": merged[:lim],
         "size": len(merged[:lim]),
@@ -234,12 +331,21 @@ def search_by_cql(cql: str, limit: int = 10, expand: list[str] | None = None) ->
     """Поиск сырой строкой CQL (для опытных пользователей). Ошибки Confluence вернутся в тексте исключения."""
     if expand is None:
         expand = ["space", "version"]
+    elif "space" not in expand:
+        # space нужен для пост-фильтрации по разрешённым пространствам
+        expand = [*expand, "space"]
     cql_stripped = (cql or "").strip()
     if not cql_stripped:
         return json.dumps({"error": "cql не может быть пустым"}, ensure_ascii=False, indent=2)
 
+    # Принудительное ограничение по разрешённым пространствам: сырой CQL оборачиваем.
+    cql_stripped, denied = _apply_cql_access(cql_stripped)
+    if denied:
+        return json.dumps({"results": [], "size": 0}, ensure_ascii=False, indent=2)
+
     lim = max(1, min(int(limit), 100))
     result = client.search(cql=cql_stripped, limit=lim, expand=expand)
+    result["results"] = _filter_results_by_space(result.get("results", []))
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -260,6 +366,8 @@ def get_page_content(page_id: str) -> str:
         content_id=pid,
         expand=["space", "version", "body.view", "ancestors", "children.page"],
     )
+    if not _space_allowed((result.get("space") or {}).get("key")):
+        return _denied_space_response()
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -276,6 +384,11 @@ def get_page_children(page_id: str, limit: int = 25) -> str:
         return json.dumps({"error": "page_id не может быть пустым"}, ensure_ascii=False, indent=2)
 
     lim = max(1, min(int(limit), 100))
+    # Сначала проверяем пространство родителя, чтобы не раскрывать дочерние из чужого space.
+    if not has_full_access():
+        parent = client.get_content(content_id=pid, expand=["space"])
+        if not _space_allowed((parent.get("space") or {}).get("key")):
+            return _denied_space_response()
     result = client.get_children(content_id=pid, limit=lim)
     return json.dumps(result, indent=2, ensure_ascii=False)
 
@@ -285,6 +398,11 @@ def list_spaces(limit: int = 50) -> str:
     """Список пространств (spaces), до limit штук (макс. 100)."""
     lim = max(1, min(int(limit), 100))
     result = client.get_spaces(limit=lim)
+    if not has_full_access():
+        allowed_set = set(get_allowed_spaces())
+        spaces = result.get("results", [])
+        result["results"] = [s for s in spaces if isinstance(s, dict) and s.get("key") in allowed_set]
+        result["size"] = len(result["results"])
     return json.dumps(result, indent=2, ensure_ascii=False)
 
 
@@ -329,6 +447,33 @@ def confluence_health() -> str:
     return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
+class IdentityMiddleware:
+    """ASGI-middleware: по заголовкам X-Localchat-User / X-Localchat-Secret выбирает
+    профиль доступа и кладёт его имя в ContextVar для текущего запроса.
+
+    Чистый ASGI (не BaseHTTPMiddleware), чтобы ContextVar, установленный перед вызовом
+    приложения, был виден синхронным инструментам в той же задаче.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        profile = resolve_profile(
+            headers.get("x-localchat-user"),
+            headers.get("x-localchat-secret"),
+        )
+        token = current_profile.set(profile)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            current_profile.reset(token)
+
+
 async def http_health(request: Request) -> JSONResponse:
     """GET /health — версия сервера и доступность Confluence. Открывается в браузере."""
     git = _git_commit()
@@ -363,8 +508,11 @@ if __name__ == "__main__":
             await stack.enter_async_context(streamable_http_app.lifespan(app))
             yield
 
+    from starlette.middleware import Middleware
+
     app = Starlette(
         routes=[Route("/health", http_health)] + streamable_http_app.routes + sse_app.routes,
+        middleware=[Middleware(IdentityMiddleware)],
         lifespan=combined_lifespan,
     )
 
